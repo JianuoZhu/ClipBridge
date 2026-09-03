@@ -1,0 +1,11 @@
+{
+  "name": "Jianuo Clip",
+  "short_name": "Clip",
+  "description": "你的私人跨设备剪贴板与文件传输工具",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d0f0e",
+  "theme_color": "#0d0f0e",
+  "lang": "zh-CN"
+}

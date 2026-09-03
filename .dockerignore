@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+data
+node_modules
+outputs
+work
+tests
+infra
+README.md

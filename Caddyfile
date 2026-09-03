@@ -1,0 +1,17 @@
+{$CLIP_DOMAIN} {
+    encode zstd gzip
+    reverse_proxy clip:8080
+
+    header {
+        Strict-Transport-Security "max-age=31536000"
+        X-Content-Type-Options "nosniff"
+        Referrer-Policy "no-referrer"
+        Permissions-Policy "camera=(), microphone=(), geolocation=(), payment=()"
+        -Server
+    }
+
+    log {
+        output stdout
+        format console
+    }
+}

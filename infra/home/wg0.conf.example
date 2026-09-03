@@ -1,0 +1,12 @@
+# Home computer: /etc/wireguard/wg0.conf
+[Interface]
+Address = 10.66.0.2/24
+PrivateKey = <HOME_PRIVATE_KEY>
+
+[Peer]
+# Public server
+PublicKey = <SERVER_PUBLIC_KEY>
+PresharedKey = <PRESHARED_KEY>
+Endpoint = <SERVER_PUBLIC_IP>:51820
+AllowedIPs = 10.66.0.1/32
+PersistentKeepalive = 25

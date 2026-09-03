@@ -1,0 +1,55 @@
+services:
+  clip:
+    build: .
+    restart: unless-stopped
+    environment:
+      CLIP_DOMAIN: ${CLIP_DOMAIN}
+      CLIP_USERNAME: ${CLIP_USERNAME}
+      CLIP_PASSWORD: ${CLIP_PASSWORD}
+      CLIP_RETENTION_HOURS: ${CLIP_RETENTION_HOURS:-24}
+      CLIP_MAX_FILE_MB: ${CLIP_MAX_FILE_MB:-512}
+      CLIP_MAX_STORAGE_GB: ${CLIP_MAX_STORAGE_GB:-5}
+      CLIP_SESSION_DAYS: ${CLIP_SESSION_DAYS:-30}
+      CLIP_COOKIE_SECURE: "true"
+      CLIP_DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    networks:
+      - clip_internal
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on:
+      clip:
+        condition: service_healthy
+    environment:
+      CLIP_DOMAIN: ${CLIP_DOMAIN}
+    ports:
+      - "${CLIP_TUNNEL_IP:-10.66.0.2}:80:80"
+      - "${CLIP_TUNNEL_IP:-10.66.0.2}:443:443"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    networks:
+      - clip_internal
+      - caddy_egress
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  clip_internal:
+    internal: true
+  caddy_egress:
+
+volumes:
+  caddy_data:
+  caddy_config:
