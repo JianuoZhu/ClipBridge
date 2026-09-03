@@ -1,3 +1,10 @@
+{
+    # The HAProxy tunnel carries TCP only; do not advertise HTTP/3 over UDP.
+    servers {
+        protocols h1 h2
+    }
+}
+
 {$CLIP_DOMAIN} {
     encode zstd gzip
     reverse_proxy clip:8080

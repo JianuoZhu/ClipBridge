@@ -168,6 +168,7 @@ textarea:focus-visible {
   line-height: 1.6;
 }
 .composer textarea::placeholder { color: #a5aaa4; }
+.composer textarea:focus-visible { outline: 3px solid rgba(49, 95, 81, .3); }
 .actions {
   display: flex;
   justify-content: space-between;
@@ -342,7 +343,7 @@ textarea:focus-visible {
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
 }
-.item-meta { margin: 0; color: var(--muted); font-size: 10px; }
+.item-meta { margin: 0; color: var(--muted); font-size: 10px; overflow-wrap: anywhere; }
 .item-actions { display: flex; gap: 6px; }
 .item-actions button,
 .item-actions a {
@@ -414,6 +415,7 @@ textarea:focus-visible {
   color: var(--ink);
 }
 .login-card input:focus { border-color: #8eaa9f; background: white; }
+.login-card input:focus-visible { outline: 3px solid rgba(49, 95, 81, .3); }
 .form-error { min-height: 17px; margin: -2px 0 9px; color: var(--danger); font-size: 10px; }
 
 .toast {

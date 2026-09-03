@@ -1,6 +1,11 @@
 .git
 .gitignore
 .env
+.env.*
+**/*.pem
+**/*.key
+**/wg0.conf
+clip-backup*.tar.gz
 data
 node_modules
 outputs

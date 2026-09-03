@@ -3,12 +3,13 @@ services:
     build: .
     restart: unless-stopped
     environment:
-      CLIP_DOMAIN: ${CLIP_DOMAIN}
-      CLIP_USERNAME: ${CLIP_USERNAME}
-      CLIP_PASSWORD: ${CLIP_PASSWORD}
+      CLIP_DOMAIN: ${CLIP_DOMAIN:?Set CLIP_DOMAIN in .env}
+      CLIP_USERNAME: ${CLIP_USERNAME:-admin}
+      CLIP_PASSWORD: ${CLIP_PASSWORD:?Set CLIP_PASSWORD in .env}
       CLIP_RETENTION_HOURS: ${CLIP_RETENTION_HOURS:-24}
       CLIP_MAX_FILE_MB: ${CLIP_MAX_FILE_MB:-512}
       CLIP_MAX_STORAGE_GB: ${CLIP_MAX_STORAGE_GB:-5}
+      CLIP_MAX_TEXT_KB: ${CLIP_MAX_TEXT_KB:-1024}
       CLIP_SESSION_DAYS: ${CLIP_SESSION_DAYS:-30}
       CLIP_COOKIE_SECURE: "true"
       CLIP_DATA_DIR: /data
@@ -23,6 +24,11 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   caddy:
     image: caddy:2-alpine
@@ -31,7 +37,7 @@ services:
       clip:
         condition: service_healthy
     environment:
-      CLIP_DOMAIN: ${CLIP_DOMAIN}
+      CLIP_DOMAIN: ${CLIP_DOMAIN:?Set CLIP_DOMAIN in .env}
     ports:
       - "${CLIP_TUNNEL_IP:-10.66.0.2}:80:80"
       - "${CLIP_TUNNEL_IP:-10.66.0.2}:443:443"
@@ -44,6 +50,11 @@ services:
       - caddy_egress
     security_opt:
       - no-new-privileges:true
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   clip_internal:

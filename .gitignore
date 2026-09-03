@@ -1,10 +1,15 @@
 node_modules/
 .next/
 .env
+.env.*
+!.env.example
 data/
 coverage/
 *.log
 *.pem
+*.key
+wg0.conf
+clip-backup*.tar.gz
 .DS_Store
 .wrangler/
 .vinext/

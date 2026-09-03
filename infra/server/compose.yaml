@@ -3,6 +3,8 @@ services:
     image: haproxy:3.2-alpine
     restart: unless-stopped
     network_mode: host
+    # Bind privileged host ports, then drop to haproxy in haproxy.cfg.
+    user: "0:0"
     volumes:
       - ./haproxy.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
     read_only: true
@@ -11,8 +13,20 @@ services:
       - /var/run:size=8m
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+      - SETUID
+      - SETGID
     healthcheck:
-      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      # Query the running worker; configuration syntax alone is not liveness.
+      test: ["CMD-SHELL", "printf 'show info\\n' | socat -T 2 - UNIX-CONNECT:/var/run/haproxy.sock | grep -q '^Name: HAProxy'"]
       interval: 30s
       timeout: 5s
       retries: 3
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"

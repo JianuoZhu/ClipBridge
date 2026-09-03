@@ -25,6 +25,13 @@ export class Store {
       CREATE INDEX IF NOT EXISTS idx_sessions_expires_at
         ON sessions(expires_at);
 
+      CREATE TABLE IF NOT EXISTS auth_credentials (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        username TEXT NOT NULL,
+        salt TEXT NOT NULL,
+        password_hash TEXT NOT NULL
+      ) STRICT;
+
       CREATE TABLE IF NOT EXISTS items (
         id TEXT PRIMARY KEY,
         kind TEXT NOT NULL CHECK (kind IN ('text', 'file')),
@@ -50,6 +57,9 @@ export class Store {
       "SELECT username, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?"
     );
     this.deleteSessionStatement = this.db.prepare("DELETE FROM sessions WHERE token_hash = ?");
+    this.getCredentialStateStatement = this.db.prepare(
+      "SELECT username, salt, password_hash AS passwordHash FROM auth_credentials WHERE id = 1"
+    );
     this.insertItemStatement = this.db.prepare(`
       INSERT INTO items(id, kind, text_content, file_name, mime_type, blob_name, size, created_at, expires_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -78,6 +88,33 @@ export class Store {
 
   deleteSession(tokenHash) {
     this.deleteSessionStatement.run(tokenHash);
+  }
+
+  getCredentialState() {
+    return this.getCredentialStateStatement.get();
+  }
+
+  syncCredentials(username, salt, passwordHash) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const previous = this.getCredentialState();
+      const changed = !previous || previous.username !== username ||
+        previous.salt !== salt || previous.passwordHash !== passwordHash;
+      if (changed) {
+        // Unbound sessions from an older database cannot prove which credentials created them.
+        this.db.exec("DELETE FROM sessions");
+        this.db.prepare(`
+          INSERT INTO auth_credentials(id, username, salt, password_hash) VALUES (1, ?, ?, ?)
+          ON CONFLICT(id) DO UPDATE SET username = excluded.username,
+            salt = excluded.salt, password_hash = excluded.password_hash
+        `).run(username, salt, passwordHash);
+      }
+      this.db.exec("COMMIT");
+      return changed;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   createItem(item) {
@@ -112,17 +149,17 @@ export class Store {
   }
 
   cleanup(now) {
-    const expired = this.expiredItemsStatement.all(now);
     this.db.exec("BEGIN IMMEDIATE");
     try {
+      const expired = this.expiredItemsStatement.all(now);
       this.deleteExpiredItemsStatement.run(now);
       this.db.prepare("DELETE FROM sessions WHERE expires_at <= ?").run(now);
       this.db.exec("COMMIT");
+      return expired;
     } catch (error) {
       this.db.exec("ROLLBACK");
       throw error;
     }
-    return expired;
   }
 
   close() {

@@ -29,7 +29,7 @@
         <header class="topbar">
           <div class="brand"><span>J</span><strong>Jianuo Clip</strong></div>
           <div class="top-actions">
-            <div id="connection-status" class="status"><i></i><span>正在连接</span></div>
+            <div id="connection-status" class="status" role="status" aria-live="polite" aria-label="正在连接"><i aria-hidden="true"></i><span>正在连接</span></div>
             <button id="logout-button" class="quiet-button" type="button">退出</button>
           </div>
         </header>
@@ -42,9 +42,9 @@
 
         <section class="composer" aria-labelledby="send-title">
           <h2 id="send-title" class="sr-only">发送文字</h2>
-          <textarea id="text-input" placeholder="粘贴文字…" maxlength="1048576"></textarea>
+          <textarea id="text-input" placeholder="粘贴文字…" aria-labelledby="send-title"></textarea>
           <div class="actions">
-            <span class="composer-hint">⌘ Enter</span>
+            <span class="composer-hint">Ctrl / ⌘ Enter</span>
             <button id="send-text" class="primary" type="button">发送</button>
           </div>
         </section>

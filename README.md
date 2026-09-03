@@ -1,249 +1,164 @@
-# Jianuo Clip
+# ClipBridge
 
-一个运行在自己电脑上的私人跨设备剪贴板和文件传输工具。公网服务器只负责
-TCP 转发，HTTPS 连接最终在家中电脑上终止。
+把文字和文件，送到自己的另一台设备。
 
-## 已实现
+ClipBridge（界面名称 **Jianuo Clip**）是一个轻量、自托管的跨设备剪贴板和文件中转工具。在电脑上发送文字或文件，再从手机、平板或另一台电脑的浏览器打开、复制或下载。内容保存在你运行服务的机器上。
 
-- 文字发送、一键复制和实时同步
-- 多文件拖放上传、进度显示、下载和删除
-- HTTP Range 下载，可继续未完成的文件下载
-- SQLite 持久化、自动过期清理和存储配额限制
-- 单账户登录、密码 KDF、登录限速和安全会话 Cookie
-- CSRF、Host、Origin、CSP 和上传路径防护
-- PWA 应用壳，可从手机浏览器安装
-- 家中电脑 Docker/Caddy 配置
-- 公网服务器 WireGuard/HAProxy 配置
-- 自动化 API 测试
+后端使用 **Node.js 24 + SQLite**，前端使用原生 HTML、CSS 和 JavaScript，**没有第三方运行时依赖，也不需要前端构建**。适合个人和少量可信设备共用一个账号。
 
-浏览器不会允许网页在后台静默读取系统剪贴板，因此文字同步需要点击发送和
-复制。这是浏览器的安全限制。
+[快速开始](#快速开始) · [公网部署](docs/deployment.md) · [安全模型](SECURITY.md)
 
-## 网络结构
+## 功能
 
-~~~text
-浏览器
-  │ HTTPS（完整 TLS 连接）
-  ▼
-国内公网服务器
-  ├─ HAProxy：TCP 80/443 原样转发
-  └─ WireGuard：10.66.0.1
-            │ 加密隧道
-            ▼
-家中电脑
-  ├─ WireGuard：10.66.0.2
-  ├─ Caddy：申请证书并终止 HTTPS
-  └─ Clip：Node.js + SQLite + 文件目录
-~~~
+- **文字共享**：发送、复制、删除，支持 `Ctrl/Cmd + Enter` 发送。
+- **文件中转**：多文件选择与拖放、上传进度、附件下载，支持单区间 HTTP Range 下载。
+- **实时更新**：通过 Server-Sent Events（SSE）通知在线设备，重新连接后补取最新列表。
+- **持久化与清理**：SQLite 保存内容和元数据，文件独立落盘；按保留时间过期，限制单文件大小和文件总配额。
+- **账号保护**：scrypt 密码验证、登录限速、会话 Cookie、同源写入校验及安全响应头；修改账号或密码并重启会撤销旧会话。
+- **移动端界面**：响应式布局，提供 Web App Manifest 和 Service Worker 应用外壳缓存。
+- **部署模板**：包含 Docker、Caddy、WireGuard 与 HAProxy 配置，以及自动化回归测试。
 
-因为公网服务器只转发加密的 TLS 字节，它无法看到 Clip 密码、文字或文件。
-家中磁盘上的内容是明文，建议启用系统全盘加密。
+浏览器需要你主动发送和复制文字，页面不会在后台静默读取或改写系统剪贴板。文件上传不支持断点续传；Range 支持的是下载。
 
-## 前置条件
+## 工作方式
 
-以下步骤默认公网服务器和空闲电脑均使用 Ubuntu 24.04 或兼容的 Debian
-Linux，并已安装：
+```mermaid
+flowchart LR
+    A[电脑 / 手机浏览器] -->|HTTP API：登录、文字、文件| B[Node.js 服务]
+    B -->|SSE：内容变更通知| A
+    B --> C[(SQLite：文字、元数据、会话)]
+    B --> D[磁盘：文件内容]
+```
 
-- Docker Engine 和 Docker Compose 插件
-- WireGuard 工具
-- 公网服务器安全组允许 TCP 80、TCP 443、UDP 51820
-- clip.jianuo.org 的 A 记录指向公网服务器
+文字以 UTF-8 字节数计量；文件流式写入临时目录，完成后移入文件目录并登记到数据库。活跃上传也会占用文件配额。内容到期后，API 立即停止返回该内容；磁盘清理在启动时及之后每 15 分钟执行，并回收中断上传和孤立文件。
 
-如果服务器位于中国大陆，请先确认域名备案和云厂商接入要求。当前的 .org
-域名可能无法办理新的 ICP 备案，这一点应先向服务器厂商确认。
+仓库还提供“公网服务器做入口，家中电脑保存数据”的部署方式：
 
-## 第一步：创建 WireGuard 密钥
+```text
+浏览器 ── HTTPS ──> 公网 HAProxy（TCP 转发）
+                           │
+                      WireGuard 隧道
+                           │
+                           ▼
+                   家中 Caddy（TLS 终止）
+                           │ HTTP，仅容器内网
+                           ▼
+                   ClipBridge + SQLite + 文件
+```
 
-在公网服务器执行：
+正常配置下，中转服务器不解密 HTTPS 业务内容，但仍可观察连接和流量信息。这不是客户端之间的端到端加密：家中服务可以读取内容，控制公网入口或证书验证链路的攻击者也不在此设计的完整防护范围内。详见 [安全模型](SECURITY.md)。
 
-~~~bash
-umask 077
-wg genkey | tee server-private.key | wg pubkey > server-public.key
-wg genpsk > clip-preshared.key
-~~~
+## 快速开始
 
-在家中电脑执行：
+需要 [Node.js 24 或更新版本](https://nodejs.org/)。以下流程用于在本机体验，不需要 Docker 或公网服务器。
 
-~~~bash
-umask 077
-wg genkey | tee home-private.key | wg pubkey > home-public.key
-~~~
+```bash
+git clone https://github.com/JianuoZhu/ClipBridge.git
+cd ClipBridge
+```
 
-只交换 public.key。clip-preshared.key 需要通过可信渠道复制到家中电脑。
-不要发送或提交任何 private.key。
+1. 复制配置文件：Linux/macOS 执行 `cp .env.example .env`；Windows PowerShell 执行 `Copy-Item .env.example .env`。
+2. 生成一个随机密码：
 
-## 第二步：配置公网服务器
+   ```bash
+   node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))"
+   ```
 
-复制模板：
+3. 编辑 `.env`，将域名改为 `localhost`、填入刚生成的密码，并添加本地 HTTP 设置：
 
-~~~bash
-sudo cp infra/server/wg0.conf.example /etc/wireguard/wg0.conf
-sudo chmod 600 /etc/wireguard/wg0.conf
-sudoedit /etc/wireguard/wg0.conf
-~~~
+   ```dotenv
+   CLIP_DOMAIN=localhost
+   CLIP_USERNAME=admin
+   CLIP_PASSWORD=填入刚生成的随机密码
+   CLIP_COOKIE_SECURE=false
+   CLIP_DATA_DIR=./data
+   CLIP_PORT=8080
+   ```
 
-替换以下占位符：
+4. 启动：
 
-- SERVER_PRIVATE_KEY：server-private.key 的内容
-- HOME_PUBLIC_KEY：home-public.key 的内容
-- PRESHARED_KEY：clip-preshared.key 的内容
+   ```bash
+   npm start
+   ```
 
-启动 WireGuard：
+打开 [http://localhost:8080](http://localhost:8080)，使用配置中的账号和密码登录。`npm start`、`npm run dev` 会自动读取根目录的 `.env`，已有进程环境变量优先。项目目前没有需要安装的依赖，可以直接运行。
 
-~~~bash
-sudo systemctl enable --now wg-quick@wg0
-sudo wg show
-~~~
+本地服务监听 `0.0.0.0`；`CLIP_DOMAIN` 校验 Host，不代替网络访问控制。`CLIP_COOKIE_SECURE=false` 仅用于本机 HTTP 开发。跨设备部署请使用 HTTPS，保留安全 Cookie；[公网部署文档](docs/deployment.md) 包含完整步骤。
 
-然后启动 HAProxy：
+## 配置
 
-~~~bash
-cd infra/server
-sudo docker compose up -d
-sudo docker compose logs --tail=50
-~~~
+`KB / MB / GB` 环境变量按 1024 进制计算，即 KiB / MiB / GiB。修改配置后需重启；Docker Compose 部署需重新创建容器。
 
-HAProxy 会把公网 80/443 原样转发到 10.66.0.2。公网服务器上不能再有其他
-程序占用这两个端口。
-
-## 第三步：配置家中电脑
-
-复制 WireGuard 模板：
-
-~~~bash
-sudo cp infra/home/wg0.conf.example /etc/wireguard/wg0.conf
-sudo chmod 600 /etc/wireguard/wg0.conf
-sudoedit /etc/wireguard/wg0.conf
-~~~
-
-替换：
-
-- HOME_PRIVATE_KEY：home-private.key 的内容
-- SERVER_PUBLIC_KEY：server-public.key 的内容
-- PRESHARED_KEY：与服务器相同的预共享密钥
-- SERVER_PUBLIC_IP：公网服务器 IP
-
-启动隧道并测试：
-
-~~~bash
-sudo systemctl enable --now wg-quick@wg0
-ping -c 3 10.66.0.1
-sudo wg show
-~~~
-
-## 第四步：启动 Clip
-
-在项目根目录：
-
-~~~bash
-cp .env.example .env
-node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))"
-~~~
-
-把生成的密码写入 .env 的 CLIP_PASSWORD，并确认：
-
-~~~dotenv
-CLIP_DOMAIN=clip.jianuo.org
-CLIP_USERNAME=admin
-CLIP_PASSWORD=你的随机密码
-CLIP_TUNNEL_IP=10.66.0.2
-CLIP_RETENTION_HOURS=24
-CLIP_MAX_FILE_MB=512
-CLIP_MAX_STORAGE_GB=5
-~~~
-
-创建数据目录并启动：
-
-~~~bash
-mkdir -p data
-sudo chown 1000:1000 data
-sudo docker compose up -d --build
-sudo docker compose logs -f
-~~~
-
-Caddy 将通过转发后的公网 80/443 完成证书验证。首次启动通常需要等待几十秒。
-随后打开 https://clip.jianuo.org 登录。
-
-## 验证链路
-
-公网服务器：
-
-~~~bash
-sudo wg show
-curl -I http://10.66.0.2
-sudo docker compose -f infra/server/compose.yaml ps
-~~~
-
-家中电脑：
-
-~~~bash
-sudo wg show
-sudo docker compose ps
-sudo docker compose logs --tail=100 caddy clip
-~~~
-
-如果浏览器得到 503，通常表示 WireGuard 未连通或家中 Caddy 尚未启动。如果
-证书申请失败，请检查 DNS、80/443 安全组、备案拦截和两端系统时间。
-
-## 配置说明
-
-| 变量 | 默认值 | 作用 |
+| 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| CLIP_DOMAIN | 必填 | 公开域名，不含协议 |
-| CLIP_USERNAME | admin | 登录名 |
-| CLIP_PASSWORD | 必填 | 至少 12 个字符 |
-| CLIP_RETENTION_HOURS | 24 | 内容自动删除时间 |
-| CLIP_MAX_FILE_MB | 512 | 单文件上限，最高 10240 |
-| CLIP_MAX_STORAGE_GB | 5 | 有效文件的总容量上限 |
-| CLIP_MAX_TEXT_KB | 1024 | 单条文字上限 |
-| CLIP_SESSION_DAYS | 30 | 登录会话有效期 |
-| CLIP_TUNNEL_IP | 10.66.0.2 | 家中 WireGuard 地址 |
+| `CLIP_PASSWORD` | 必填 | 12–1024 个字符，建议使用随机密码 |
+| `CLIP_USERNAME` | `admin` | 共用账号名称，1–128 个字符 |
+| `CLIP_DOMAIN` | 空 | 允许的主机名，不含协议、路径或端口；空值关闭 Host 校验。Compose 部署必填 |
+| `CLIP_PORT` | `8080` | Node.js 监听端口；Compose 内固定使用 8080 |
+| `CLIP_DATA_DIR` | `./data` | 数据目录；Compose 内为 `/data`，映射到宿主 `./data` |
+| `CLIP_COOKIE_SECURE` | `true` | 安全 Cookie 开关；Compose 固定为 `true` |
+| `CLIP_RETENTION_HOURS` | `24` | 新内容保留时间，1–8760 小时 |
+| `CLIP_MAX_FILE_MB` | `512` | 单文件上限，1–10240 MiB |
+| `CLIP_MAX_STORAGE_GB` | `5` | 有效文件及活跃上传配额，1–1024 GiB |
+| `CLIP_MAX_TEXT_KB` | `1024` | 每条文字 UTF-8 大小上限，1–4096 KiB |
+| `CLIP_SESSION_DAYS` | `30` | 新会话有效期，1–365 天 |
+| `CLIP_TUNNEL_IP` | `10.66.0.2` | 仅用于 Compose 绑定家中 Caddy 的 80/443 端口 |
 
-## 备份和更新
+文件配额不等于磁盘总占用：SQLite、文字、待清理文件、日志和备份仍需要额外空间。修改保留时间或会话天数只影响之后创建的内容或会话。
 
-安全备份 SQLite 与文件：
+## 数据、更新与备份
 
-~~~bash
+```text
+data/
+├── clip.db         # SQLite：文字、文件元数据、会话、凭据派生值
+├── clip.db-wal     # 运行期间可能存在的 SQLite WAL 文件
+├── clip.db-shm     # 运行期间可能存在的 SQLite 共享内存文件
+├── blobs/          # 以随机 UUID 命名的已完成文件
+└── uploads/        # 上传临时文件
+```
+
+请把整个数据目录视为私密数据。内容没有应用层静态加密，删除与到期清理也不等于安全擦除磁盘或备份。
+
+Docker 部署的备份示例（在项目根目录执行）：
+
+```bash
 sudo docker compose down
-sudo tar -czf clip-backup.tar.gz data
+sudo tar -czf "clip-backup-$(date +%Y%m%d-%H%M%S).tar.gz" data
 sudo docker compose up -d
-~~~
+```
 
-更新代码后：
+直接运行 Node.js 时，先用 `Ctrl+C` 停止应用，再备份整个 `data` 目录。不要运行中只复制 `clip.db`。恢复前停止应用，恢复完整目录并检查读写权限；Docker 使用 UID/GID `1000:1000`。`.env` 和 Caddy 证书卷需要另行安全备份。
 
-~~~bash
-sudo docker compose up -d --build
-~~~
+取得更新后，直接运行方式重新执行 `npm start`，Docker 方式执行 `sudo docker compose up -d --build`。**首次升级到带凭据绑定的版本会要求所有设备重新登录，已保存内容保留。** 此后凭据不变的重启保留会话；修改用户名或密码并重启会撤销全部旧会话。
 
-恢复时先停止容器，再把 data 目录恢复到项目根目录，并确保 UID 1000 可以
-读写。不要在应用运行时只复制 clip.db；SQLite WAL 文件也可能包含已提交数据。
+## 开发与验证
 
-## 本地开发与测试
+```bash
+npm run dev    # 读取 .env，修改源码后自动重启
+npm run check  # 检查所有应用 JavaScript 的语法
+npm test       # Node.js 内置测试运行器，无额外测试依赖
+```
 
-需要 Node.js 24 或更新版本。应用没有第三方运行时依赖。
+测试覆盖登录与撤销、配置校验、文字和文件流程、配额与异常上传、Range 下载、SSE、数据库升级，以及前端会话竞态和 Service Worker 缓存边界。前端行为测试使用隔离的 DOM 模拟，不能代替真实浏览器兼容性测试；公网 TLS 与 WireGuard 链路需要部署后验证。
 
-Linux/macOS 本地运行：
-
-~~~bash
-CLIP_PASSWORD=correct-horse-battery-staple \
-CLIP_COOKIE_SECURE=false \
-CLIP_DATA_DIR=./data \
-npm start
-~~~
-
-然后访问 http://localhost:8080。运行测试：
-
-~~~bash
-npm test
-npm run check
-~~~
-
-完整安全模型见 SECURITY.md。
+```text
+src/                # 配置、认证、SQLite 存储、HTTP 服务与进程入口
+web/                # 原生前端、样式、Manifest、Service Worker
+tests/              # API、存储、认证和前端回归测试
+infra/home/         # 家中 WireGuard 模板
+infra/server/       # 公网 WireGuard 与 HAProxy 模板
+docs/deployment.md  # 公网部署与排错
+compose.yaml        # 家中 Node.js + Caddy
+Dockerfile          # 非 root Node.js 镜像
+Caddyfile           # HTTPS 入口配置
+```
 
 ## 当前边界
 
-- 第一版是单账户模式，不包含设备二维码配对和单设备撤销。
-- 内容在家中电脑磁盘上未做应用层加密。
-- 家中电脑离线时网站不可用。
-- 公网服务器必须独占公网 80/443，或自行把 HAProxy 配入现有入口。
-- WireGuard 和 Docker 必须设置开机启动，家中电脑应关闭自动睡眠。
+- 单账户、单实例；不要让多个进程或容器共用一个数据目录。
+- 最近列表最多显示 100 条未过期内容，暂不提供分页或搜索；旧文件仍占配额，直到删除或过期。
+- 不支持设备配对、单设备撤销、多人权限、后台系统剪贴板同步或断点上传。
+- Service Worker 仅缓存应用外壳，不缓存 API 数据、文字或下载文件；离线时不能同步，安装入口取决于浏览器支持。
+- 家中电脑离线、睡眠或隧道中断时，公网部署不可用。
+
+欢迎通过 Issue 提交问题，通过 Pull Request 提交改进。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，并避免公开真实凭据或私人内容。

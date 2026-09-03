@@ -1,23 +1,46 @@
 # Security model
 
-Jianuo Clip is designed for a single owner and a small set of trusted devices.
+ClipBridge（界面名称 Jianuo Clip）面向单个所有者和少量可信设备，共用一个账号和一个服务实例。
 
-- The public server forwards raw TCP on ports 80 and 443. It does not terminate
-  TLS, receive the Clip password, or store Clip data.
-- Caddy on the home computer terminates HTTPS and obtains the certificate.
-- WireGuard encrypts the server-to-home hop and authenticates both machines.
-- The application uses a Secure, HttpOnly, SameSite=Strict session cookie.
-- State-changing requests require a custom request header and same-origin
-  validation. Login attempts are rate limited.
-- Uploaded files are stored outside the web root under random names and are
-  always downloaded as attachments.
-- Text and file bytes are stored in plaintext on the home computer. Use
-  full-disk encryption if theft of that computer is in scope.
+## 信任边界
 
-This first release uses one shared account rather than per-device identities.
-Changing CLIP_PASSWORD invalidates future logins but does not delete existing
-sessions immediately. To revoke all sessions, stop the app and remove the
-sessions rows from data/clip.db, or replace the database while preserving the
-blobs through a controlled migration.
+- 公网 HAProxy 在正常配置下原样转发 TCP，不终止业务 HTTPS；80 端口用于 HTTP 重定向和 ACME 验证。
+- 家中 Caddy 获取证书、终止 HTTPS，再通过私有容器网络连接应用。
+- WireGuard 加密公网服务器到家中电脑的网络段，并认证两端节点。
+- 公网入口仍可观察连接 IP、时间与流量。控制入口、DNS 或证书验证链路的攻击者可能替换服务入口；本方案不保证在这些节点失陷时仍保持业务机密。
+- 家中服务、管理员、浏览器扩展及已获授权的设备可读取内容；项目不提供客户端端到端加密。
 
-Never commit .env, WireGuard private keys, or the preshared key.
+## 应用保护
+
+- 密码用随机盐和 scrypt 派生后验证；数据库保存盐与派生值，不保存明文密码。启动配置中的密码仍需要保护。
+- 会话令牌使用加密安全随机数，SQLite 仅保存令牌的 SHA-256 摘要。
+- 默认 Cookie 为 `Secure`、`HttpOnly`、`SameSite=Strict`，并使用 `__Host-` 前缀。关闭安全 Cookie 只适用于本机 HTTP 开发。
+- 写入请求需要自定义请求头；提供 Origin 时必须与预期协议、主机和端口完全匹配。配置公开域名时额外校验 Host。
+- 使用 CSP、禁止嵌入、禁止 MIME 嗅探等响应头。前端以文本节点展示用户内容。
+- 上传文件在 Web 根目录外用随机名称保存，下载强制作为附件；大小与文件配额在接收过程中检查。
+- 登录按应用看到的连接 IP 限速，每 5 分钟最多累计 30 次未成功尝试，成功登录清除该 IP 的计数；同时最多进行 4 次密码派生。计数保存在进程内，重启后清空。
+
+当前不信任客户端提供的转发 IP 请求头。在随仓库提供的 Caddy 代理配置下，各设备共享代理 IP 的登录限速；这不是按真实设备隔离的限速或封禁，也不代替公网入口的抗滥用能力。
+
+## 会话撤销
+
+- 当前设备退出会立即删除对应会话，并关闭使用该会话的 SSE 连接。
+- 活跃 SSE 连接在通知和每 20 秒心跳时复查会话；过期后关闭连接。
+- 修改 `CLIP_USERNAME` 或 `CLIP_PASSWORD` 并重启应用会撤销全部旧会话，已保存内容保留。Docker 使用 `docker compose up -d --build` 使新环境配置生效。
+- 首次升级到凭据绑定版本时，未绑定的旧会话也会撤销。凭据不变的后续重启保留有效会话。
+
+没有按设备列出和单独撤销会话的管理界面。已下载或已显示的内容无法从其他设备远程收回。
+
+## 数据与部署
+
+文字、文件及数据库在磁盘上未做应用层加密。使用操作系统全盘加密保护丢失设备上的数据，限制数据目录和备份的访问权限。过期与删除不是安全擦除：SQLite WAL、备份或底层存储可能保留历史内容。
+
+文件配额统计有效文件和活跃上传，不是磁盘总量限制。文字、SQLite、日志、备份及待清理文件需预留空间。每个数据目录只运行一个应用实例；启动及周期清理会回收未被数据库引用的随机命名文件和不属于活跃上传的临时文件。
+
+不要公开 Node.js 的 HTTP 端口，也不要提交 `.env`、真实 WireGuard 配置、私钥、预共享密钥、数据库或备份。仓库忽略规则不能保护已被 Git 跟踪的秘密；一旦泄露应轮换对应凭据。
+
+## 报告漏洞
+
+请勿在公开 Issue 中贴出可用于攻击在线实例的细节、真实密码或私人文件。如果仓库启用了 GitHub 的私密漏洞报告，请使用仓库 Security 页面的报告入口；否则先通过维护者公开的联系方式协商私下报告渠道。
+
+报告请包括受影响版本、最小复现步骤、预期与实际行为，并用测试数据替代私人内容。
