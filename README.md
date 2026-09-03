@@ -6,7 +6,7 @@ ClipBridge（界面名称 **Jianuo Clip**）是一个轻量、自托管的跨设
 
 后端使用 **Node.js 24 + SQLite**，前端使用原生 HTML、CSS 和 JavaScript，**没有第三方运行时依赖，也不需要前端构建**。适合个人和少量可信设备共用一个账号。
 
-[快速开始](#快速开始) · [公网部署](docs/deployment.md) · [安全模型](SECURITY.md)
+[快速开始](#快速开始) · [服务器与家中节点部署](docs/deployment.md) · [使用教程](docs/usage.md) · [登录机制](docs/authentication.md) · [安全模型](SECURITY.md)
 
 ## 功能
 
@@ -19,6 +19,12 @@ ClipBridge（界面名称 **Jianuo Clip**）是一个轻量、自托管的跨设
 - **部署模板**：包含 Docker、Caddy、WireGuard 与 HAProxy 配置，以及自动化回归测试。
 
 浏览器需要你主动发送和复制文字，页面不会在后台静默读取或改写系统剪贴板。文件上传不支持断点续传；Range 支持的是下载。
+
+## 账号是什么
+
+当前提供的是**单账号认证与会话管理**。部署者在家中节点的 `.env` 中设置一组 `CLIP_USERNAME` / `CLIP_PASSWORD`，自己的各台设备使用同一组凭据登录。每次登录产生独立会话，所有登录设备共享同一份文字和文件。
+
+没有注册入口、多个用户账号、用户私有空间或角色权限。登录的作用是防止其他互联网访问者读取、上传或删除你的内容；WireGuard 保护的是两台服务器之间的隧道，并不验证浏览器使用者。完整流程见 [登录机制](docs/authentication.md)。
 
 ## 工作方式
 
@@ -147,7 +153,7 @@ web/                # 原生前端、样式、Manifest、Service Worker
 tests/              # API、存储、认证和前端回归测试
 infra/home/         # 家中 WireGuard 模板
 infra/server/       # 公网 WireGuard 与 HAProxy 模板
-docs/deployment.md  # 公网部署与排错
+docs/               # 部署、使用与登录机制教程
 compose.yaml        # 家中 Node.js + Caddy
 Dockerfile          # 非 root Node.js 镜像
 Caddyfile           # HTTPS 入口配置

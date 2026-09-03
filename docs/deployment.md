@@ -2,7 +2,15 @@
 
 本指南使用公网 Linux 服务器作为 TCP 入口，通过 WireGuard 把请求转到家中 Linux 电脑。TLS 在家中 Caddy 终止，Node.js 仅在容器内网提供 HTTP 服务。
 
-如果只想本机体验，请看 [README 快速开始](../README.md#快速开始)。以下示例适用于 Linux 原生 Docker Engine；不以 Windows/macOS Docker Desktop 的网络行为为前提。
+如果只想本机体验，请看 [README 快速开始](../README.md#快速开始)。本教程以两端 Ubuntu 24.04 和 Linux 原生 Docker Engine 为例；不以 Windows/macOS Docker Desktop 的网络行为为前提。
+
+| 角色 | 部署或使用什么 | 是否保存应用数据 |
+| --- | --- | --- |
+| 公网服务器 | WireGuard + HAProxy；为浏览器提供公网入口 | 不保存文字和文件 |
+| 家中节点 | WireGuard + Docker 中的 Caddy、ClipBridge | 保存 SQLite、文件和登录配置 |
+| 使用者的电脑/手机 | 浏览器打开站点并登录 | 可保存自己下载的文件 |
+
+普通使用者不需要安装 WireGuard 或 Docker；完成部署后看 [使用教程](usage.md)。账号在**家中节点**配置，公网服务器不需要 `CLIP_PASSWORD`。
 
 ## 准备
 
@@ -14,6 +22,28 @@
 - 关闭家中电脑的自动睡眠，配置 Docker 与 WireGuard 开机启动。
 
 默认隧道地址为公网 `10.66.0.1`、家中 `10.66.0.2`。若与现有网络冲突，请同时修改两端 WireGuard、HAProxy 后端地址和 `.env` 的 `CLIP_TUNNEL_IP`。
+
+## 0. 两端安装工具并取得代码
+
+两台 Ubuntu 机器分别执行：
+
+```bash
+sudo apt update
+sudo apt install -y git wireguard openssl
+git clone https://github.com/JianuoZhu/ClipBridge.git
+cd ClipBridge
+```
+
+按 [Docker 官方 Ubuntu 安装步骤](https://docs.docker.com/engine/install/ubuntu/#install-using-the-apt-repository) 安装 Docker Engine 和 Compose 插件；已有安装则直接确认下面命令可用：
+
+```bash
+sudo systemctl enable --now docker
+sudo docker version
+sudo docker compose version
+wg --version
+```
+
+随后在域名服务商设置 `clip.example.com` 的 A 记录，并在公网服务器的云安全组及系统防火墙中放行 TCP 80/443、UDP 51820。家中路由器不需要把 80/443 转发到公网，家庭端会主动连接 WireGuard。
 
 ## 1. 生成密钥
 
@@ -82,10 +112,10 @@ ping -c 3 10.66.0.1
 ```bash
 cp .env.example .env
 chmod 600 .env
-node -e "console.log(require('node:crypto').randomBytes(24).toString('base64url'))"
+openssl rand -hex 24
 ```
 
-这里的密码生成命令需要宿主机安装 Node.js；也可用密码管理器生成随机密码，应用运行本身由 Docker 提供 Node.js。
+把生成的随机字符串保存到密码管理器，再填入下面的 `CLIP_PASSWORD`。也可直接用密码管理器生成密码；宿主机不需要安装 Node.js。
 
 编辑 `.env`，至少配置：
 
@@ -108,6 +138,8 @@ sudo docker compose logs --tail=100 caddy clip
 已有数据目录时，先确认目录正确，再确保容器用户 `1000:1000` 能读写其中内容。Compose 固定启用安全 Cookie，不应加入本地开发的 HTTP 例外。
 
 Caddy 通过转发的 80/443 完成 ACME 证书验证。证书申请成功后，打开 `https://clip.example.com` 并登录。当前入口仅转发 TCP，因此 Caddy 使用 HTTP/1.1 和 HTTP/2。
+
+部署完成后的验收：在电脑和手机分别打开这个 HTTPS 网址，用家中节点配置的同一账号登录；电脑发送一条测试文字，手机应自动看到并能复制；再上传一个小文件，在另一台设备下载。操作步骤见 [使用教程](usage.md)。
 
 ## 验证与排错
 
