@@ -121,6 +121,7 @@ openssl rand -hex 24
 
 ```dotenv
 CLIP_DOMAIN=clip.example.com
+CLIP_PIN=1223
 CLIP_USERNAME=admin
 CLIP_PASSWORD=替换为自己的随机密码
 CLIP_TUNNEL_IP=10.66.0.2
@@ -139,7 +140,9 @@ sudo docker compose logs --tail=100 caddy clip
 
 Caddy 通过转发的 80/443 完成 ACME 证书验证。证书申请成功后，打开 `https://clip.example.com` 并登录。当前入口仅转发 TCP，因此 Caddy 使用 HTTP/1.1 和 HTTP/2。
 
-部署完成后的验收：在电脑和手机分别打开这个 HTTPS 网址，用家中节点配置的同一账号登录；电脑发送一条测试文字，手机应自动看到并能复制；再上传一个小文件，在另一台设备下载。操作步骤见 [使用教程](usage.md)。
+`CLIP_PIN` 用于普通设备传输，示例值 `1223` 可改为自己的 4–12 位数字。`CLIP_USERNAME` / `CLIP_PASSWORD` 用于管理员文件库，管理员密码留空则关闭该入口。
+
+部署完成后的验收：在电脑和手机分别打开这个 HTTPS 网址，输入 PIN；电脑发送一条测试文字，手机应自动看到并能复制；再上传一个小文件，在另一台设备下载。管理员登录后检查文件库上传、预览、编辑和下载；PIN 用户应看不到文件库。操作步骤见 [使用教程](usage.md)。
 
 ## 验证与排错
 

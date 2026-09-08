@@ -1,3 +1,10 @@
+FROM node:24-bookworm-slim AS web-builder
+
+WORKDIR /build
+COPY package.json package-lock.json tsconfig.json vite.config.ts components.json ./
+COPY web ./web
+RUN npm ci --ignore-scripts && npm run build
+
 FROM node:24-bookworm-slim
 
 ENV NODE_ENV=production \
@@ -5,9 +12,9 @@ ENV NODE_ENV=production \
     CLIP_PORT=8080
 
 WORKDIR /app
-COPY --chown=node:node package.json ./
+COPY --chown=node:node package.json THIRD_PARTY_NOTICES.md ./
 COPY --chown=node:node src ./src
-COPY --chown=node:node web ./web
+COPY --from=web-builder --chown=node:node /build/dist ./dist
 
 RUN mkdir -p /data && chown node:node /data && chmod 700 /data
 USER node

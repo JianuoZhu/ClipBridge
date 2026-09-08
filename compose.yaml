@@ -4,8 +4,9 @@ services:
     restart: unless-stopped
     environment:
       CLIP_DOMAIN: ${CLIP_DOMAIN:?Set CLIP_DOMAIN in .env}
+      CLIP_PIN: ${CLIP_PIN:-1223}
       CLIP_USERNAME: ${CLIP_USERNAME:-admin}
-      CLIP_PASSWORD: ${CLIP_PASSWORD:?Set CLIP_PASSWORD in .env}
+      CLIP_PASSWORD: ${CLIP_PASSWORD:-}
       CLIP_RETENTION_HOURS: ${CLIP_RETENTION_HOURS:-24}
       CLIP_MAX_FILE_MB: ${CLIP_MAX_FILE_MB:-512}
       CLIP_MAX_STORAGE_GB: ${CLIP_MAX_STORAGE_GB:-5}

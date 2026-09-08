@@ -3,79 +3,17 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-    <meta name="theme-color" content="#f5f6f2">
-    <meta name="description" content="运行在你自己电脑上的私人跨设备剪贴板。">
+    <meta name="theme-color" content="#f4f8f6">
+    <meta name="csp-nonce" content="__CSP_NONCE__">
+    <meta name="description" content="你的私人跨设备剪贴板与文件传输工作台。">
+    <link rel="icon" href="/icon.svg" type="image/svg+xml">
     <link rel="manifest" href="/manifest.webmanifest">
-    <link rel="stylesheet" href="/styles.css">
+    <script src="/theme-init.js"></script>
     <title>Jianuo Clip</title>
   </head>
   <body>
-    <div id="login-view" class="login-view" hidden>
-      <main class="login-card">
-        <div class="login-brand"><span class="brand-mark" aria-hidden="true">J</span> Jianuo Clip</div>
-        <h1>欢迎回来</h1>
-        <p class="login-copy">继续你的私人传输。</p>
-        <form id="login-form">
-          <label>用户名<input id="username" name="username" autocomplete="username" required></label>
-          <label>密码<input id="password" name="password" type="password" autocomplete="current-password" required></label>
-          <p id="login-error" class="form-error" role="alert"></p>
-          <button class="primary wide" type="submit">登录</button>
-        </form>
-      </main>
-    </div>
-
-    <div id="app-view" hidden>
-      <main class="shell">
-        <header class="topbar">
-          <div class="brand"><span>J</span><strong>Jianuo Clip</strong></div>
-          <div class="top-actions">
-            <div id="connection-status" class="status" role="status" aria-live="polite" aria-label="正在连接"><i aria-hidden="true"></i><span>正在连接</span></div>
-            <button id="logout-button" class="quiet-button" type="button">退出</button>
-          </div>
-        </header>
-
-        <section class="hero">
-          <p class="eyebrow">PRIVATE CLIPBOARD</p>
-          <h1>随手复制，接着做。</h1>
-          <p>在你的设备之间。</p>
-        </section>
-
-        <section class="composer" aria-labelledby="send-title">
-          <h2 id="send-title" class="sr-only">发送文字</h2>
-          <textarea id="text-input" placeholder="粘贴文字…" aria-labelledby="send-title"></textarea>
-          <div class="actions">
-            <span class="composer-hint">Ctrl / ⌘ Enter</span>
-            <button id="send-text" class="primary" type="button">发送</button>
-          </div>
-        </section>
-
-        <section id="drop-zone" class="drop-zone" aria-labelledby="file-title">
-          <input id="file-input" type="file" multiple hidden>
-          <div class="drop-icon" aria-hidden="true">＋</div>
-          <div>
-            <h2 id="file-title">传文件</h2>
-            <p>拖入，或<button id="pick-files" type="button">选择</button></p>
-          </div>
-          <span id="file-limit" class="file-limit"></span>
-        </section>
-        <div id="upload-list" class="upload-list" aria-live="polite"></div>
-
-        <section class="recent">
-          <div class="section-title">
-            <div><h2>最近</h2></div>
-            <span id="retention-label"></span>
-          </div>
-          <div id="empty-state" class="empty-state" hidden>
-            <div>⌁</div>
-            <h3>这里还很安静</h3>
-            <p>发送的内容会出现在这里。</p>
-          </div>
-          <div id="items" class="items"></div>
-        </section>
-      </main>
-    </div>
-
-    <div id="toast" class="toast" role="status" aria-live="polite"></div>
-    <script src="/app.js" defer></script>
+    <div id="root"></div>
+    <noscript>请启用 JavaScript，以使用设备传输和文件预览。</noscript>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

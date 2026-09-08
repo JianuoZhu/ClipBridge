@@ -4,7 +4,10 @@ import fs from "node:fs/promises";
 import vm from "node:vm";
 
 const appSource = await fs.readFile(new URL("../web/app.js", import.meta.url), "utf8");
-const workerSource = await fs.readFile(new URL("../web/sw.js", import.meta.url), "utf8");
+const workerSource = (await fs.readFile(new URL("../web/sw.js", import.meta.url), "utf8"))
+  .replace('"__BUILD_VERSION__"', '"test"')
+  .replace('["__APP_SHELL__"]', '["/", "/app.js"]')
+  .replace('["__STATIC_ASSETS__"]', '["/", "/app.js"]');
 const flush = () => new Promise((resolve) => setImmediate(resolve));
 const response = (body, status = 200) => Response.json(body, { status });
 const session = {
@@ -59,6 +62,9 @@ class Element {
     if (this.parent) this.parent.children = this.parent.children.filter((child) => child !== this);
   }
   setAttribute(name, value) { this.attributes.set(name, value); }
+  removeAttribute(name) { this.attributes.delete(name); }
+  showModal() { this.open = true; }
+  close() { this.open = false; }
   focus() {}
   select() {}
 }
@@ -259,7 +265,7 @@ test("service-worker activation only deletes this app's outdated caches", async 
       clients: { claim: async () => { claimed = true; } },
     },
     caches: {
-      keys: async () => ["other-app-v1", "jianuo-clip-v1", "jianuo-clip-v2"],
+      keys: async () => ["other-app-v1", "jianuo-clip-v1", "jianuo-clip-v2", "jianuo-clip-v3"],
       delete: async (key) => { deleted.push(key); },
     },
   });
@@ -267,8 +273,78 @@ test("service-worker activation only deletes this app's outdated caches", async 
   let pending;
   handlers.get("activate")({ waitUntil: (promise) => { pending = promise; } });
   await pending;
-  assert.deepEqual(deleted, ["jianuo-clip-v1"]);
+  assert.deepEqual(deleted, ["jianuo-clip-v1", "jianuo-clip-v2", "jianuo-clip-v3"]);
   assert.equal(claimed, true);
+});
+
+test("PIN login submits only the PIN and a member cannot open the library panel", async () => {
+  const page = await browser();
+  let submitted;
+  page.context.fetch = async (url, options) => {
+    if (url === "/api/auth/login") { submitted = JSON.parse(options.body); return response(session); }
+    if (url === "/api/session") return response({ ...session, role: "member" });
+    assert.equal(url, "/api/items");
+    return response({ items: [] });
+  };
+  page.element("pin").value = "0012";
+  await page.element("login-form").emit("submit");
+  assert.deepEqual(submitted, { pin: "0012" });
+  assert.equal(page.element("pin").value, "");
+  assert.equal(page.element("library-tab").hidden, true);
+  page.context.switchPanel("library");
+  assert.equal(page.element("library-panel").hidden, true);
+});
+
+test("latest cards show one text and one file even when the file is outside history", async () => {
+  const page = await browser();
+  const file = { id: "file", kind: "file", fileName: "important.pdf", size: 10, createdAt: Date.now(), expiresAt: Date.now() + 60000 };
+  page.context.fetch = async () => response({ items: [item("newest")], latest: [item("newest"), file] });
+  await page.signIn();
+  assert.equal(page.element("latest-items").children.length, 2);
+  assert.equal(page.element("latest-items").children[1].children[2].children[0].href, "/api/items/file/file");
+  page.context.showLogin();
+  assert.equal(page.element("latest-items").children.length, 0);
+});
+
+test("late library and preview responses cannot restore private data after logout", async () => {
+  const page = await browser();
+  await page.context.showApp({ ...session, role: "admin" });
+  const listing = deferred();
+  const preview = deferred();
+  page.context.fetch = async (url) => url.endsWith("/content") ? preview.promise : listing.promise;
+  const loading = page.context.loadLibrary();
+  const file = { id: "private", fileName: "secret.txt", previewType: "text", revision: 1 };
+  const opening = page.context.openFile(file);
+  page.context.showLogin();
+  listing.resolve(response({ files: [file], usedBytes: 6 }));
+  preview.resolve(response({ file, text: "secret" }));
+  await Promise.all([loading, opening]);
+  assert.equal(page.element("library-files").children.length, 0);
+  assert.equal(page.element("file-editor").value, "");
+  assert.equal(page.element("edit-file-name").value, "");
+  assert.equal(page.element("file-dialog").open, false);
+});
+
+test("an edit conflict preserves the unsaved text and original revision for review", async () => {
+  const page = await browser();
+  await page.context.showApp({ ...session, role: "admin" });
+  const file = { id: "private", fileName: "notes.txt", previewType: "text", revision: 1 };
+  let saved;
+  page.context.fetch = async (_url, options) => {
+    if (options.method === "PATCH") {
+      saved = JSON.parse(options.body);
+      return response({ error: "文件已被修改，请重新打开后再保存" }, 409);
+    }
+    return response({ file, text: "original" });
+  };
+  await page.context.openFile(file);
+  page.element("file-editor").value = "my unsaved changes";
+  await page.element("file-form").emit("submit");
+  assert.equal(saved.revision, 1);
+  assert.equal(page.element("file-editor").value, "my unsaved changes");
+  assert.equal(page.element("file-dialog").open, true);
+  assert.match(page.element("file-error").textContent, /重新打开/);
+  assert.equal(page.element("file-save").disabled, false);
 });
 
 test("service worker excludes API and unrelated paths, returning a Response on an offline cache miss", async () => {

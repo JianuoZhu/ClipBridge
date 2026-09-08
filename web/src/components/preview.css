@@ -1,0 +1,37 @@
+.preview-dialog { width: min(1180px, calc(100vw - 30px)); height: min(900px, calc(100dvh - 30px)); max-height: none; display: flex; flex-direction: column; overflow: hidden; }
+.preview-dialog .dialog-header { flex: none; margin-bottom: 10px; }
+.preview-toolbar { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; flex: none; padding: 4px 0 10px; }
+.preview-toolbar .button-outline { margin-left: auto; }
+.image-stage, .pdf-stage { flex: 1; min-height: 0; border: 1px solid var(--border); border-radius: 13px; background: color-mix(in srgb, var(--background) 86%, #777); overflow: auto; }
+.image-stage { width: 100% !important; height: 100% !important; }
+.image-content { width: 100%; height: 100%; display: flex; align-items: center; justify-content: center; }
+.image-content img { display: block; max-width: 100%; max-height: 100%; object-fit: contain; }
+.pdf-stage { display: grid; justify-items: center; padding: 22px; }
+.pdf-stage .react-pdf__Document { min-height: 100%; }
+.pdf-stage .react-pdf__Page { box-shadow: 0 5px 24px #0004; background: white; }
+.pdf-stage canvas { max-width: 100%; height: auto !important; }
+.page-field { display: flex; align-items: center; gap: 5px; color: var(--muted-foreground); }
+.page-field input { width: 54px; min-height: 36px; padding: 5px 7px; text-align: center; }
+.preview-state { min-height: 220px; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--muted-foreground); text-align: center; }
+.preview-state svg { width: 31px; height: 31px; color: var(--primary); }
+.password-panel { position: absolute; inset: 78px 14px 14px; z-index: 3; display: grid; place-items: center; align-content: center; gap: 14px; padding: 25px; border-radius: 13px; background: color-mix(in srgb, var(--card) 96%, transparent); }
+.password-panel label { width: min(340px, 100%); display: grid; gap: 7px; font-weight: 650; }
+.inline-error { color: var(--danger); margin: 8px 0 0; }
+.thumbnail { position: relative; display: grid; place-items: center; width: 86px; min-width: 86px; height: 68px; overflow: hidden; padding: 0; border: 1px solid var(--border); border-radius: 11px; background: var(--muted); color: var(--muted-foreground); }
+.thumbnail img { width: 100%; height: 100%; object-fit: cover; transition: transform 180ms ease, opacity 180ms; }
+.thumbnail-loading { background: linear-gradient(100deg, var(--muted), var(--card-raised), var(--muted)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+.thumbnail-loading img { opacity: 0; }
+.thumbnail-interactive { cursor: zoom-in; }
+.thumbnail-interactive:hover img { transform: scale(1.045); }
+.thumbnail:disabled { opacity: 1; }
+.thumbnail svg { width: 23px; height: 23px; }
+.thumbnail-caption, .thumbnail-retry { position: absolute; inset: auto 4px 4px; padding: 2px 5px; border-radius: 5px; background: #101817cc; color: white; font-size: 9px; line-height: 1.3; }
+.thumbnail-retry { display: flex; align-items: center; gap: 3px; cursor: pointer; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg) } }
+@media (max-width: 640px) {
+  .preview-dialog { inset: 4px; top: 4px; left: 4px; transform: none; width: calc(100vw - 8px); height: calc(100dvh - 8px); max-height: none; }
+  .preview-toolbar { flex-wrap: nowrap; overflow-x: auto; }
+  .preview-toolbar .button-outline { margin-left: 0; }
+  .pdf-stage { padding: 8px; }
+}

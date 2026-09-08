@@ -7,6 +7,7 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { Store } from "../src/store.js";
 import { createClipServer } from "../src/server.js";
+import { listenOnLoopback } from "./support/listen.js";
 
 async function start(t, overrides = {}, seed) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "clip-regression-"));
@@ -18,7 +19,7 @@ async function start(t, overrides = {}, seed) {
   const store = new Store(dataDir);
   await seed?.(store);
   const app = await createClipServer({ config, store });
-  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  await listenOnLoopback(app.server);
   const base = `http://127.0.0.1:${app.server.address().port}`;
   t.after(async () => {
     await new Promise((resolve) => app.close(resolve));
@@ -28,7 +29,7 @@ async function start(t, overrides = {}, seed) {
   const request = (url, options = {}) => fetch(base + url, {
     signal: AbortSignal.timeout(5000), ...options,
   });
-  const login = await request("/api/auth/login", {
+  const login = await request("/api/auth/admin", {
     method: "POST", headers: { "X-Clip-Request": "1" },
     body: JSON.stringify({ username: config.username, password: config.password }),
   });

@@ -47,14 +47,28 @@ export class Store {
         ON items(created_at DESC);
       CREATE INDEX IF NOT EXISTS idx_items_expires_at
         ON items(expires_at);
+
+      CREATE TABLE IF NOT EXISTS library_files (
+        id TEXT PRIMARY KEY,
+        file_name TEXT NOT NULL,
+        mime_type TEXT NOT NULL,
+        blob_name TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL,
+        revision INTEGER NOT NULL DEFAULT 1
+      ) STRICT;
     `);
+    if (!this.db.prepare("PRAGMA table_info(sessions)").all().some((column) => column.name === "role")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('member', 'admin'))");
+    }
     this.db.exec("PRAGMA optimize");
 
     this.insertSessionStatement = this.db.prepare(
-      "INSERT INTO sessions(token_hash, username, created_at, expires_at) VALUES (?, ?, ?, ?)"
+      "INSERT INTO sessions(token_hash, username, created_at, expires_at, role) VALUES (?, ?, ?, ?, ?)"
     );
     this.findSessionStatement = this.db.prepare(
-      "SELECT username, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?"
+      "SELECT username, role, expires_at FROM sessions WHERE token_hash = ? AND expires_at > ?"
     );
     this.deleteSessionStatement = this.db.prepare("DELETE FROM sessions WHERE token_hash = ?");
     this.getCredentialStateStatement = this.db.prepare(
@@ -66,7 +80,7 @@ export class Store {
     `);
     this.getItemStatement = this.db.prepare("SELECT * FROM items WHERE id = ?");
     this.listItemsStatement = this.db.prepare(
-      "SELECT * FROM items WHERE expires_at > ? ORDER BY created_at DESC LIMIT ?"
+      "SELECT * FROM items WHERE expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT ?"
     );
     this.deleteItemStatement = this.db.prepare("DELETE FROM items WHERE id = ? RETURNING *");
     this.expiredItemsStatement = this.db.prepare(
@@ -74,12 +88,12 @@ export class Store {
     );
     this.deleteExpiredItemsStatement = this.db.prepare("DELETE FROM items WHERE expires_at <= ?");
     this.usedFileBytesStatement = this.db.prepare(
-      "SELECT COALESCE(SUM(size), 0) AS bytes FROM items WHERE kind = 'file' AND expires_at > ?"
+      "SELECT (SELECT COALESCE(SUM(size), 0) FROM items WHERE kind = 'file' AND expires_at > ?) + (SELECT COALESCE(SUM(size), 0) FROM library_files) AS bytes"
     );
   }
 
-  createSession(tokenHash, username, createdAt, expiresAt) {
-    this.insertSessionStatement.run(tokenHash, username, createdAt, expiresAt);
+  createSession(tokenHash, username, createdAt, expiresAt, role = "member") {
+    this.insertSessionStatement.run(tokenHash, username, createdAt, expiresAt, role);
   }
 
   findSession(tokenHash, now) {
@@ -142,6 +156,36 @@ export class Store {
 
   deleteItem(id) {
     return this.deleteItemStatement.get(id);
+  }
+
+  latestItems(now) {
+    return ["text", "file"].map((kind) => this.db.prepare(
+      "SELECT * FROM items WHERE kind = ? AND expires_at > ? ORDER BY created_at DESC, rowid DESC LIMIT 1"
+    ).get(kind, now)).filter(Boolean);
+  }
+
+  createLibraryFile(file) {
+    this.db.prepare(`INSERT INTO library_files(id, file_name, mime_type, blob_name, size, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(file.id, file.fileName, file.mimeType, file.blobName, file.size, file.createdAt, file.createdAt);
+    return this.getLibraryFile(file.id);
+  }
+
+  getLibraryFile(id) {
+    return this.db.prepare("SELECT * FROM library_files WHERE id = ?").get(id);
+  }
+
+  listLibraryFiles() {
+    return this.db.prepare("SELECT * FROM library_files ORDER BY updated_at DESC, rowid DESC").all();
+  }
+
+  updateLibraryFile(id, revision, file) {
+    return this.db.prepare(`UPDATE library_files SET file_name = ?, blob_name = ?, size = ?, updated_at = ?,
+      revision = revision + 1 WHERE id = ? AND revision = ? RETURNING *`)
+      .get(file.fileName, file.blobName, file.size, Date.now(), id, revision);
+  }
+
+  deleteLibraryFile(id, revision) {
+    return this.db.prepare("DELETE FROM library_files WHERE id = ? AND revision = ? RETURNING *").get(id, revision);
   }
 
   usedFileBytes(now) {

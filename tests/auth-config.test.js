@@ -9,6 +9,9 @@ test("configuration accepts documented defaults and explicit settings", () => {
   const defaults = loadConfig(validEnv);
   assert.equal(defaults.port, 8080);
   assert.equal(defaults.username, "admin");
+  assert.equal(defaults.pin, "1223");
+  assert.equal(loadConfig({}).password, "");
+  assert.equal(loadConfig({ CLIP_PIN: "0012" }).pin, "0012");
   assert.equal(defaults.cookieSecure, true);
   assert.equal(defaults.maxTextBytes, 1024 * 1024);
 
@@ -44,7 +47,10 @@ test("configuration rejects partially parsed integers and out-of-range limits", 
 });
 
 test("configuration rejects unusable credentials and malformed hostnames", () => {
-  for (const password of ["", "short", " ".repeat(12), "x".repeat(1025), "replace-with-a-long-random-password"]) {
+  for (const pin of ["", "123", "1234567890123", "12a3", " 1223", 1223]) {
+    assert.throws(() => loadConfig({ CLIP_PIN: pin }), /CLIP_PIN/);
+  }
+  for (const password of ["short", " ".repeat(12), "x".repeat(1025), "replace-with-a-long-random-password"]) {
     assert.throws(() => loadConfig({ CLIP_PASSWORD: password }), /CLIP_PASSWORD/);
   }
   for (const username of [" ", "user\nname", "x".repeat(129)]) {

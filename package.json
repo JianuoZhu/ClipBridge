@@ -7,9 +7,46 @@
     "node": ">=24.0.0"
   },
   "scripts": {
-    "dev": "node --env-file-if-exists=.env --watch src/index.js",
+    "dev": "concurrently --kill-others --names api,web \"npm:dev:api\" \"npm:dev:web\"",
+    "dev:api": "node --env-file-if-exists=.env --watch src/index.js",
+    "dev:web": "vite --host 127.0.0.1",
     "start": "node --env-file-if-exists=.env src/index.js",
-    "test": "node --test --test-isolation=none",
-    "check": "node --check src/index.js && node --check src/config.js && node --check src/auth.js && node --check src/store.js && node --check src/server.js && node --check web/app.js && node --check web/sw.js"
+    "build": "tsc --noEmit && vite build",
+    "test": "npm run build && npm run test:server && npm run test:ui",
+    "test:server": "node --test --test-isolation=none tests/*.test.js",
+    "test:ui": "vitest run",
+    "test:e2e": "npm run build && playwright test",
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/auth.js && node --check src/store.js && node --check src/server.js && tsc --noEmit"
+  },
+  "dependencies": {
+    "@radix-ui/colors": "3.0.0",
+    "class-variance-authority": "0.7.1",
+    "clsx": "2.1.1",
+    "get-nonce": "1.0.1",
+    "lucide-react": "1.39.0",
+    "motion": "13.2.0",
+    "radix-ui": "1.6.7",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "react-pdf": "10.5.0",
+    "react-zoom-pan-pinch": "4.1.1",
+    "tailwind-merge": "3.6.0"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.62.1",
+    "@tailwindcss/vite": "4.3.3",
+    "@testing-library/jest-dom": "7.0.1",
+    "@testing-library/react": "16.3.3",
+    "@testing-library/user-event": "14.6.7",
+    "@types/node": "26.4.1",
+    "@types/react": "19.2.18",
+    "@types/react-dom": "19.2.7",
+    "@vitejs/plugin-react": "6.1.1",
+    "concurrently": "10.0.5",
+    "jsdom": "29.1.1",
+    "tailwindcss": "4.3.3",
+    "typescript": "7.0.2",
+    "vite": "8.2.2",
+    "vitest": "5.0.0"
   }
 }

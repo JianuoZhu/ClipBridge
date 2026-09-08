@@ -7,6 +7,7 @@ import path from "node:path";
 import { createSession } from "../src/auth.js";
 import { createClipServer } from "../src/server.js";
 import { Store } from "../src/store.js";
+import { listenOnLoopback } from "./support/listen.js";
 
 async function fixture(t) {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "clip-stream-test-"));
@@ -28,7 +29,7 @@ async function fixture(t) {
     await fs.rm(dataDir, { recursive: true, force: true });
   });
   app = await createClipServer({ config, store });
-  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  await listenOnLoopback(app.server);
   const base = `http://127.0.0.1:${app.server.address().port}`;
   const session = createSession(store, config.username, config.sessionDays);
   return { base, store, cookie: `clip_session=${session.token}` };

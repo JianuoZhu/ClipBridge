@@ -10,9 +10,13 @@ function integer(value, fallback, minimum, maximum, name) {
 }
 
 export function loadConfig(env = process.env) {
+  const pin = env.CLIP_PIN ?? "1223";
+  if (typeof pin !== "string" || !/^\d{4,12}$/.test(pin)) {
+    throw new Error("CLIP_PIN must contain 4 to 12 digits");
+  }
   const password = env.CLIP_PASSWORD ?? "";
-  if (typeof password !== "string" || password.length < 12 || password.length > 1024 ||
-      !password.trim() || password === "replace-with-a-long-random-password") {
+  if (typeof password !== "string" || (password !== "" && (password.length < 12 || password.length > 1024 ||
+      !password.trim() || password === "replace-with-a-long-random-password"))) {
     throw new Error("CLIP_PASSWORD must contain 12 to 1024 characters and must not be blank or the example password");
   }
 
@@ -35,6 +39,7 @@ export function loadConfig(env = process.env) {
     port: integer(env.CLIP_PORT, 8080, 1, 65535, "CLIP_PORT"),
     dataDir: path.resolve(env.CLIP_DATA_DIR || "./data"),
     domain,
+    pin,
     username,
     password,
     retentionHours: integer(env.CLIP_RETENTION_HOURS, 24, 1, 8760, "CLIP_RETENTION_HOURS"),

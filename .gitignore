@@ -1,4 +1,8 @@
 node_modules/
+dist/
+.cache/
+test-results/
+playwright-report/
 .next/
 .env
 .env.*

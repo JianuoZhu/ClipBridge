@@ -40,11 +40,11 @@ export async function createPasswordVerifier(expectedPassword, { store, username
   };
 }
 
-export function createSession(store, username, sessionDays) {
+export function createSession(store, username, sessionDays, role = "member") {
   const token = randomBytes(32).toString("base64url");
   const now = Date.now();
   const expiresAt = now + sessionDays * 24 * 60 * 60 * 1000;
-  store.createSession(hashToken(token), username, now, expiresAt);
+  store.createSession(hashToken(token), username, now, expiresAt, role);
   return { token, expiresAt };
 }
 

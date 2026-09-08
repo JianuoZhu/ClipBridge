@@ -2,7 +2,7 @@ import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import {
   createPasswordVerifier,
@@ -12,15 +12,32 @@ import {
   parseCookies,
 } from "./auth.js";
 
-const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../web");
-const staticFiles = new Map([
-  ["/", ["index.html", "text/html; charset=utf-8"]],
-  ["/index.html", ["index.html", "text/html; charset=utf-8"]],
-  ["/styles.css", ["styles.css", "text/css; charset=utf-8"]],
-  ["/app.js", ["app.js", "text/javascript; charset=utf-8"]],
-  ["/manifest.webmanifest", ["manifest.webmanifest", "application/manifest+json; charset=utf-8"]],
-  ["/sw.js", ["sw.js", "text/javascript; charset=utf-8"]],
+const webDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../dist/web");
+const staticContentTypes = new Map([
+  [".html", "text/html; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".mjs", "text/javascript; charset=utf-8"],
+  [".json", "application/json; charset=utf-8"],
+  [".webmanifest", "application/manifest+json; charset=utf-8"],
+  [".wasm", "application/wasm"],
+  [".bcmap", "application/octet-stream"],
+  [".pfb", "application/octet-stream"],
+  [".ttf", "font/ttf"],
+  [".otf", "font/otf"],
+  [".woff", "font/woff"],
+  [".woff2", "font/woff2"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".gif", "image/gif"],
+  [".webp", "image/webp"],
+  [".avif", "image/avif"],
+  [".svg", "image/svg+xml"],
+  [".ico", "image/x-icon"],
 ]);
+const maxImagePreviewBytes = 20 * 1024 * 1024;
+const maxPdfPreviewBytes = 100 * 1024 * 1024;
 
 class HttpError extends Error {
   constructor(status, message) {
@@ -29,10 +46,10 @@ class HttpError extends Error {
   }
 }
 
-function securityHeaders(response) {
+function securityHeaders(response, nonce) {
   response.setHeader(
     "Content-Security-Policy",
-    "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+    `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; script-src-attr 'none'; style-src 'self'${nonce ? ` 'nonce-${nonce}'` : ""}; style-src-elem 'self' 'unsafe-inline'; style-src-attr 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data: blob:; worker-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'`
   );
   response.setHeader("X-Content-Type-Options", "nosniff");
   response.setHeader("X-Frame-Options", "DENY");
@@ -40,6 +57,39 @@ function securityHeaders(response) {
   response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
   response.setHeader("Cross-Origin-Resource-Policy", "same-origin");
   response.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()");
+}
+
+function isInsideDirectory(directory, candidate) {
+  const relative = path.relative(directory, candidate);
+  return relative !== "" && relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+async function findStaticFile(pathname) {
+  // Never turn a missing API route into an HTML response, or expose dotfiles,
+  // Windows alternate data streams, source maps, or files outside the build.
+  let decoded;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  if (decoded === "/api" || decoded.startsWith("/api/") || /[\\:\u0000-\u001f\u007f]/.test(decoded)) return null;
+  const parts = decoded.split("/").filter(Boolean);
+  if (parts.some((part) => part.startsWith("."))) return null;
+  const fileName = decoded === "/" ? "index.html" : parts.join("/");
+  const contentType = staticContentTypes.get(path.extname(fileName).toLowerCase());
+  if (!contentType) return null;
+  const candidate = path.resolve(webDir, fileName);
+  if (!isInsideDirectory(webDir, candidate)) return null;
+  try {
+    const [root, realFile] = await Promise.all([fs.promises.realpath(webDir), fs.promises.realpath(candidate)]);
+    if (!isInsideDirectory(root, realFile)) return null;
+    const stat = await fs.promises.stat(realFile);
+    return stat.isFile() ? { filePath: realFile, fileName, contentType } : null;
+  } catch (error) {
+    if (["ENOENT", "ENOTDIR", "ELOOP"].includes(error.code)) return null;
+    throw error;
+  }
 }
 
 function json(response, status, value) {
@@ -110,7 +160,7 @@ function publicItem(row) {
     expiresAt: row.expires_at,
   };
   if (row.kind === "text") return { ...common, text: row.text_content };
-  return { ...common, fileName: row.file_name, mimeType: row.mime_type };
+  return { ...common, fileName: row.file_name, mimeType: row.mime_type, previewType: previewType(row) };
 }
 
 function encodeRFC5987(value) {
@@ -152,13 +202,39 @@ function validBlobName(value) {
   return typeof value === "string" && /^[0-9a-f-]{36}$/.test(value);
 }
 
+function previewType(item, maxTextBytes = 0) {
+  const extension = path.extname(item.file_name || "").toLowerCase();
+  if ([".png", ".jpg", ".jpeg", ".gif", ".webp"].includes(extension) && item.size <= maxImagePreviewBytes) return "image";
+  if (extension === ".pdf" && item.size <= maxPdfPreviewBytes) return "pdf";
+  if (item.size <= maxTextBytes && [".txt", ".md", ".markdown", ".json", ".csv", ".tsv", ".log", ".yaml", ".yml", ".xml", ".html", ".css", ".js", ".ts", ".py", ".sh", ".ini", ".toml", ".sql", ".svg"].includes(extension)) return "text";
+  return null;
+}
+
+function imageMime(bytes) {
+  if (bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]))) return "image/png";
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) return "image/jpeg";
+  if (["GIF87a", "GIF89a"].includes(bytes.toString("ascii", 0, 6))) return "image/gif";
+  if (bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  throw new HttpError(415, "此文件无法作为图片预览，请下载查看");
+}
+
+function previewMime(bytes, type) {
+  if (type === "image") return imageMime(bytes);
+  if (type === "pdf" && /^%PDF-(?:1\.[0-7]|2\.0)(?:\s|$)/.test(bytes.toString("ascii"))) return "application/pdf";
+  throw new HttpError(415, "此文件无法作为 PDF 预览，请下载查看");
+}
+
 export async function createClipServer({ config, store }) {
-  const verifyPassword = await createPasswordVerifier(config.password, { store, username: config.username });
-  const loginLimiter = new LoginLimiter({ attempts: 30, windowMs: 5 * 60 * 1000 });
+  const pin = config.pin ?? "1223";
+  // Bind every session to both credentials and the new role model; upgrading revokes legacy sessions.
+  await createPasswordVerifier(hashToken(JSON.stringify(["roles-v1", pin, config.username, config.password])), { store, username: config.username });
+  const verifyPassword = await createPasswordVerifier(config.password || "");
+  const verifyPin = await createPasswordVerifier(pin);
+  const loginLimiter = new LoginLimiter();
   const cookieName = config.cookieSecure ? "__Host-clip_session" : "clip_session";
   const eventClients = new Map();
   const activeUploads = new Set();
-  const findBlob = store.db.prepare("SELECT 1 FROM items WHERE blob_name = ?");
+  const findBlob = store.db.prepare("SELECT 1 FROM items WHERE blob_name = ? UNION ALL SELECT 1 FROM library_files WHERE blob_name = ?");
   let loginInFlight = 0;
   let uploadingBytes = 0;
   let cleanupTask;
@@ -168,11 +244,12 @@ export async function createClipServer({ config, store }) {
     client.end("event: session-expired\ndata: {}\n\n");
   };
 
-  const broadcast = (payload) => {
+  const broadcast = (payload, adminOnly = false) => {
     for (const [client, tokenHash] of eventClients) {
-      if (!store.findSession(tokenHash, Date.now())) {
+      const session = store.findSession(tokenHash, Date.now());
+      if (!session) {
         expireClient(client);
-      } else if (!client.write(payload)) {
+      } else if ((!adminOnly || session.role === "admin") && !client.write(payload)) {
         // Reconnecting clients refresh their list; do not buffer unbounded events.
         eventClients.delete(client);
         client.destroy();
@@ -183,6 +260,12 @@ export async function createClipServer({ config, store }) {
   const notify = (action, itemId) => {
     broadcast(`event: items\ndata: ${JSON.stringify({ action, itemId })}\n\n`);
   };
+  const notifyLibrary = () => broadcast("event: library\ndata: {}\n\n", true);
+  const publicFile = (row) => ({
+    id: row.id, fileName: row.file_name, mimeType: row.mime_type, size: row.size,
+    createdAt: row.created_at, updatedAt: row.updated_at, revision: row.revision,
+    previewType: previewType(row, config.maxTextBytes),
+  });
 
   const removeBlob = async (blobName) => {
     if (!validBlobName(blobName)) return;
@@ -201,7 +284,7 @@ export async function createClipServer({ config, store }) {
       // Recover files left by interrupted uploads or failed earlier deletions.
       const blobs = await fs.promises.readdir(store.blobsDir, { withFileTypes: true });
       for (const entry of blobs) {
-        if (entry.isFile() && validBlobName(entry.name) && !activeUploads.has(entry.name) && !findBlob.get(entry.name)) {
+        if (entry.isFile() && validBlobName(entry.name) && !activeUploads.has(entry.name) && !findBlob.get(entry.name, entry.name)) {
           await removeBlob(entry.name);
         }
       }
@@ -240,6 +323,21 @@ export async function createClipServer({ config, store }) {
     if (!session) throw new HttpError(401, "请先登录");
     return session;
   };
+
+  const requireAdmin = (request) => {
+    const session = requireSession(request);
+    if (session.role !== "admin") throw new HttpError(403, "文件库仅限管理员使用");
+    return session;
+  };
+
+  const sessionPayload = (session) => ({
+    authenticated: true, username: session.username, role: session.role,
+    adminEnabled: Boolean(config.password),
+    settings: {
+      retentionHours: config.retentionHours, maxFileBytes: config.maxFileBytes,
+      maxStorageBytes: config.maxStorageBytes, maxTextBytes: config.maxTextBytes,
+    },
+  });
 
   const requireMutationRequest = (request) => {
     if (request.headers["x-clip-request"] !== "1") {
@@ -335,22 +433,14 @@ export async function createClipServer({ config, store }) {
 
     if (request.method === "GET" && pathname === "/api/session") {
       const session = getSession(request);
-      if (!session) return json(response, 200, { authenticated: false });
-      return json(response, 200, {
-        authenticated: true,
-        username: session.username,
-        settings: {
-          retentionHours: config.retentionHours,
-          maxFileBytes: config.maxFileBytes,
-          maxStorageBytes: config.maxStorageBytes,
-          maxTextBytes: config.maxTextBytes,
-        },
-      });
+      if (!session) return json(response, 200, { authenticated: false, adminEnabled: Boolean(config.password) });
+      return json(response, 200, sessionPayload(session));
     }
 
-    if (request.method === "POST" && pathname === "/api/auth/login") {
+    if (request.method === "POST" && ["/api/auth/login", "/api/auth/admin"].includes(pathname)) {
       requireMutationRequest(request);
-      const key = request.socket.remoteAddress || "unknown";
+      const adminLogin = pathname === "/api/auth/admin";
+      const key = `${adminLogin ? "admin" : "pin"}:${request.socket.remoteAddress || "unknown"}`;
       if (!loginLimiter.allowed(key)) throw new HttpError(429, "尝试次数过多，请稍后再试");
       const body = await readJson(request, 16 * 1024);
       const username = typeof body.username === "string" ? body.username : "";
@@ -359,18 +449,29 @@ export async function createClipServer({ config, store }) {
       if (!loginLimiter.allowed(key)) throw new HttpError(429, "尝试次数过多，请稍后再试");
       loginLimiter.fail(key);
       loginInFlight += 1;
-      let passwordMatches = false;
+      let valid = false;
       try {
-        passwordMatches = password.length <= 1024 ? await verifyPassword(password) : false;
+        valid = adminLogin
+          ? Boolean(config.password) && await verifyPassword(password) && username === config.username
+          : typeof body.pin === "string" && /^\d{4,12}$/.test(body.pin) && await verifyPin(body.pin);
       } finally {
         loginInFlight -= 1;
       }
-      const valid = username === config.username && passwordMatches;
       if (!valid) {
-        throw new HttpError(401, "用户名或密码错误");
+        throw new HttpError(401, adminLogin ? "管理员账号或密码错误" : "PIN 码错误");
       }
       loginLimiter.success(key);
-      const session = createSession(store, config.username, config.sessionDays);
+      const previous = getSession(request);
+      if (previous) {
+        const previousHash = hashToken(previous.token);
+        store.deleteSession(previousHash);
+        for (const [client, tokenHash] of eventClients) {
+          if (tokenHash === previousHash) expireClient(client);
+        }
+      }
+      const role = adminLogin ? "admin" : "member";
+      const sessionUsername = adminLogin ? config.username : "PIN";
+      const session = createSession(store, sessionUsername, config.sessionDays, role);
       const cookie = [
         `${cookieName}=${session.token}`,
         "Path=/",
@@ -380,16 +481,7 @@ export async function createClipServer({ config, store }) {
       ];
       if (config.cookieSecure) cookie.push("Secure");
       response.setHeader("Set-Cookie", cookie.join("; "));
-      return json(response, 200, {
-        authenticated: true,
-        username: config.username,
-        settings: {
-          retentionHours: config.retentionHours,
-          maxFileBytes: config.maxFileBytes,
-          maxStorageBytes: config.maxStorageBytes,
-          maxTextBytes: config.maxTextBytes,
-        },
-      });
+      return json(response, 200, sessionPayload({ username: sessionUsername, role }));
     }
 
     if (request.method === "POST" && pathname === "/api/auth/logout") {
@@ -408,8 +500,9 @@ export async function createClipServer({ config, store }) {
 
     if (request.method === "GET" && pathname === "/api/items") {
       requireSession(request);
-      const items = store.listItems(Date.now()).map(publicItem);
-      return json(response, 200, { items });
+      const now = Date.now();
+      const items = store.listItems(now).map(publicItem);
+      return json(response, 200, { items, latest: store.latestItems(now).map(publicItem) });
     }
 
     if (request.method === "POST" && pathname === "/api/items/text") {
@@ -467,13 +560,117 @@ export async function createClipServer({ config, store }) {
       }
     }
 
-    const fileMatch = /^\/api\/items\/([0-9a-f-]{36})\/file$/.exec(pathname);
+    if (pathname === "/api/library" || pathname.startsWith("/api/library/")) {
+      requireAdmin(request);
+      if (!["GET", "HEAD"].includes(request.method)) requireMutationRequest(request);
+    }
+
+    if (request.method === "GET" && pathname === "/api/library") {
+      return json(response, 200, { files: store.listLibraryFiles().map(publicFile), usedBytes: store.usedFileBytes(Date.now()) });
+    }
+
+    if (request.method === "POST" && pathname === "/api/library") {
+      const fileName = sanitizeFileName(firstHeader(request.headers["x-clip-file-name"]));
+      const mimeType = normalizeMimeType(firstHeader(request.headers["content-type"]));
+      const blobName = randomUUID();
+      const upload = await saveUpload(request, blobName);
+      try {
+        requireAdmin(request);
+        const file = store.createLibraryFile({ id: randomUUID(), fileName, mimeType, blobName, size: upload.size, createdAt: Date.now() });
+        notifyLibrary();
+        return json(response, 201, { file: publicFile(file) });
+      } catch (error) {
+        await removeBlob(blobName);
+        throw error;
+      } finally {
+        upload.release();
+      }
+    }
+
+    const libraryMatch = /^\/api\/library\/([0-9a-f-]{36})(?:\/(content|file|preview))?$/.exec(pathname);
+    if (libraryMatch && ["GET", "PATCH", "DELETE"].includes(request.method) && !["file", "preview"].includes(libraryMatch[2])) {
+      const file = store.getLibraryFile(libraryMatch[1]);
+      if (!file || !validBlobName(file.blob_name)) throw new HttpError(404, "文件不存在");
+      if (request.method === "GET" && libraryMatch[2] === "content") {
+        if (previewType(file, config.maxTextBytes) !== "text") throw new HttpError(415, "此文件暂不支持文本预览和编辑，请下载查看");
+        let bytes;
+        try {
+          bytes = await fs.promises.readFile(path.join(store.blobsDir, file.blob_name));
+        } catch (error) {
+          if (error.code === "ENOENT") throw new HttpError(404, "文件不存在");
+          throw error;
+        }
+        requireAdmin(request);
+        let text;
+        try {
+          text = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
+          if (text.includes("\u0000")) throw new Error();
+        } catch {
+          throw new HttpError(415, "仅支持 UTF-8 文本预览和编辑，请下载查看此文件");
+        }
+        return json(response, 200, { file: publicFile(file), text });
+      }
+      if (libraryMatch[2]) throw new HttpError(405, "不支持此操作");
+      if (request.method === "GET") return json(response, 200, { file: publicFile(file) });
+      const body = await readJson(request, config.maxTextBytes * 6 + 2048);
+      requireAdmin(request);
+      if (!Number.isSafeInteger(body.revision) || body.revision !== file.revision) throw new HttpError(409, "文件已被修改，请重新打开后再操作");
+      if (request.method === "DELETE") {
+        const deleted = store.deleteLibraryFile(file.id, body.revision);
+        if (!deleted) throw new HttpError(409, "文件已被修改，请刷新后重试");
+        await removeBlob(deleted.blob_name);
+        notifyLibrary();
+        return noContent(response);
+      }
+      if (typeof body.fileName !== "string" || !body.fileName.trim() || Array.from(body.fileName).length > 240) throw new HttpError(400, "请输入有效文件名（最多 240 个字符）");
+      const fileName = sanitizeFileName(encodeURIComponent(body.fileName));
+      if (fileName !== body.fileName.normalize("NFC").trim()) throw new HttpError(400, "文件名不能包含路径或控制字符");
+      const editingText = Object.hasOwn(body, "text");
+      if (editingText && (typeof body.text !== "string" || body.text.includes("\u0000") || previewType(file, config.maxTextBytes) !== "text")) throw new HttpError(415, "此内容不支持文本编辑");
+      const bytes = editingText ? Buffer.from(body.text, "utf8") : null;
+      if (bytes && (bytes.length > config.maxTextBytes || bytes.length > config.maxFileBytes)) throw new HttpError(413, "文字内容过大");
+      const reservation = bytes ? Math.max(0, bytes.length - file.size) : 0;
+      if (reservation && store.usedFileBytes(Date.now()) + uploadingBytes + reservation > config.maxStorageBytes) throw new HttpError(507, "存储空间配额不足");
+      const blobName = bytes ? randomUUID() : file.blob_name;
+      const temporaryPath = path.join(store.uploadsDir, `${blobName}.part`);
+      let committed = false;
+      uploadingBytes += reservation;
+      if (bytes) activeUploads.add(blobName);
+      try {
+        if (bytes) {
+          await fs.promises.writeFile(temporaryPath, bytes, { flag: "wx", mode: 0o600, flush: true });
+          await fs.promises.rename(temporaryPath, path.join(store.blobsDir, blobName));
+        }
+        requireAdmin(request);
+        const updated = store.updateLibraryFile(file.id, body.revision, { fileName, blobName, size: bytes ? bytes.length : file.size });
+        if (!updated) throw new HttpError(409, "文件已被修改，请重新打开后再保存");
+        committed = true;
+        if (bytes) await removeBlob(file.blob_name);
+        notifyLibrary();
+        return json(response, 200, { file: publicFile(updated) });
+      } finally {
+        uploadingBytes -= reservation;
+        if (bytes) {
+          if (!committed) await removeBlob(blobName);
+          await fs.promises.unlink(temporaryPath).catch(() => {});
+          activeUploads.delete(blobName);
+        }
+      }
+    }
+
+    const sharedFileMatch = /^\/api\/items\/([0-9a-f-]{36})\/(file|preview)$/.exec(pathname);
+    const libraryDownload = libraryMatch && ["file", "preview"].includes(libraryMatch[2]);
+    const fileMatch = sharedFileMatch || (libraryDownload && libraryMatch);
     if ((request.method === "GET" || request.method === "HEAD") && fileMatch) {
       requireSession(request);
-      const item = store.getItem(fileMatch[1]);
-      if (!item || item.expires_at <= Date.now() || item.kind !== "file" || !validBlobName(item.blob_name)) {
+      if (libraryDownload) requireAdmin(request);
+      const item = libraryDownload ? store.getLibraryFile(fileMatch[1]) : store.getItem(fileMatch[1]);
+      const preview = libraryDownload ? libraryMatch[2] === "preview" : sharedFileMatch[2] === "preview";
+      if (!item || (!libraryDownload && (item.expires_at <= Date.now() || item.kind !== "file")) || !validBlobName(item.blob_name)) {
         throw new HttpError(404, "文件不存在或已经过期");
       }
+      const type = previewType(item, config.maxTextBytes);
+      if (preview && !["image", "pdf"].includes(type)) throw new HttpError(415, "此文件暂不支持在线预览");
       const filePath = path.join(store.blobsDir, item.blob_name);
       let handle;
       try {
@@ -485,16 +682,23 @@ export async function createClipServer({ config, store }) {
       try {
         const stat = await handle.stat();
         if (!stat.isFile()) throw new HttpError(404, "文件不存在");
+        let contentType = "application/octet-stream";
+        if (preview) {
+          const signature = Buffer.alloc(12);
+          await handle.read(signature, 0, 12, 0);
+          contentType = previewMime(signature, type);
+        }
         const range = request.method === "HEAD" ? null : parseRange(firstHeader(request.headers.range), stat.size);
         if (range === false) {
           response.writeHead(416, { "Content-Range": `bytes */${stat.size}`, "Cache-Control": "no-store" });
           return response.end();
         }
         const headers = {
-          "Content-Type": "application/octet-stream",
-          "Content-Disposition": contentDisposition(item.file_name),
+          "Content-Type": contentType,
+          "Content-Disposition": preview ? "inline" : contentDisposition(item.file_name),
           "Accept-Ranges": "bytes",
           "Cache-Control": "private, no-store",
+          "Content-Encoding": "identity",
           "Content-Length": range ? range.end - range.start + 1 : stat.size,
         };
         if (range) headers["Content-Range"] = `bytes ${range.start}-${range.end}/${stat.size}`;
@@ -532,13 +736,19 @@ export async function createClipServer({ config, store }) {
       return;
     }
 
-    if ((request.method === "GET" || request.method === "HEAD") && staticFiles.has(pathname)) {
-      const [name, contentType] = staticFiles.get(pathname);
-      const body = await fs.promises.readFile(path.join(webDir, name));
+    if (request.method === "GET" || request.method === "HEAD") {
+      const file = await findStaticFile(pathname);
+      if (!file) throw new HttpError(404, "未找到");
+      let body = await fs.promises.readFile(file.filePath);
+      if (file.fileName === "index.html") {
+        const nonce = randomBytes(18).toString("base64url");
+        body = Buffer.from(body.toString("utf8").replaceAll("__CSP_NONCE__", nonce));
+        securityHeaders(response, nonce);
+      }
       response.writeHead(200, {
-        "Content-Type": contentType,
+        "Content-Type": file.contentType,
         "Content-Length": body.length,
-        "Cache-Control": name === "index.html" ? "no-store" : "no-cache",
+        "Cache-Control": file.fileName === "index.html" ? "no-store" : file.fileName.startsWith("assets/") ? "public, max-age=31536000, immutable" : "no-cache",
       });
       return response.end(request.method === "HEAD" ? undefined : body);
     }

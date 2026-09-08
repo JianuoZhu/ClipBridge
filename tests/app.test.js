@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { Store } from "../src/store.js";
 import { createClipServer } from "../src/server.js";
+import { listenOnLoopback } from "./support/listen.js";
 
 test("authenticated text and file workflow", async (t) => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "jianuo-clip-test-"));
@@ -23,7 +24,7 @@ test("authenticated text and file workflow", async (t) => {
   };
   const store = new Store(dataDir);
   const app = await createClipServer({ config, store });
-  await new Promise((resolve) => app.server.listen(0, "127.0.0.1", resolve));
+  await listenOnLoopback(app.server);
   const address = app.server.address();
   const base = `http://127.0.0.1:${address.port}`;
 
@@ -39,21 +40,21 @@ test("authenticated text and file workflow", async (t) => {
   const missingRequestMarker = await fetch(`${base}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: "admin", password: config.password }),
+    body: JSON.stringify({ pin: "1223" }),
   });
   assert.equal(missingRequestMarker.status, 403);
 
   const rejected = await fetch(`${base}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Clip-Request": "1" },
-    body: JSON.stringify({ username: "admin", password: "wrong-password" }),
+    body: JSON.stringify({ pin: "9999" }),
   });
   assert.equal(rejected.status, 401);
 
   const login = await fetch(`${base}/api/auth/login`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Clip-Request": "1" },
-    body: JSON.stringify({ username: "admin", password: config.password }),
+    body: JSON.stringify({ pin: "1223" }),
   });
   assert.equal(login.status, 200);
   const cookie = login.headers.get("set-cookie").split(";", 1)[0];
