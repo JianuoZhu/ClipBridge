@@ -66,6 +66,149 @@ test("themes persist and the compact mobile workspace does not overflow", async 
   await context.close();
 });
 
+test("loading indicators animate before opening a preview and respect reduced motion", async ({ browser }) => {
+  const context = await browser.newContext({ serviceWorkers: "block", reducedMotion: "no-preference" });
+  const page = await context.newPage();
+  const previewAssets: string[] = [];
+  page.on("request", (request) => {
+    if (/\/assets\/PreviewDialog[^/]*\.(js|css)$/.test(new URL(request.url()).pathname)) previewAssets.push(request.url());
+  });
+  let releasePreview!: () => void;
+  const previewGate = new Promise<void>((resolve) => { releasePreview = resolve; });
+  await page.route(/\/api\/items\/[^/]+\/preview(?:\?|$)/, async (route) => {
+    await previewGate;
+    await route.continue();
+  });
+  try {
+    await login(page);
+    await page.locator('input[type="file"]').first().setInputFiles({ name: "loading-animation.png", mimeType: "image/png", buffer: png });
+    const card = page.locator(".items-list .file-card").filter({ hasText: "loading-animation.png" }).first();
+    const thumbnail = card.locator(".thumbnail-loading");
+    const spinner = thumbnail.locator(".spin");
+    await expect(spinner).toBeVisible();
+    await expect(thumbnail).toHaveCSS("border-radius", "11px");
+    await expect(thumbnail).toHaveCSS("width", "86px");
+    await expect(spinner).toHaveCSS("animation-name", "spin");
+    const transform = await spinner.evaluate((node) => getComputedStyle(node).transform);
+    await expect.poll(() => spinner.evaluate((node) => getComputedStyle(node).transform)).not.toBe(transform);
+    const backgroundPosition = await thumbnail.evaluate((node) => getComputedStyle(node).backgroundPosition);
+    await expect.poll(() => thumbnail.evaluate((node) => getComputedStyle(node).backgroundPosition)).not.toBe(backgroundPosition);
+    expect(previewAssets).toEqual([]);
+
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await expect(spinner).toHaveCSS("animation-iteration-count", "1");
+    await expect.poll(() => spinner.evaluate((node) => node.getAnimations().every((animation) => animation.playState === "finished"))).toBe(true);
+    await expect.poll(() => thumbnail.evaluate((node) => node.getAnimations().every((animation) => animation.playState === "finished"))).toBe(true);
+    releasePreview();
+    await expect(card.locator(".thumbnail img")).toBeVisible();
+
+    await page.setViewportSize({ width: 390, height: 780 });
+    await expect(card.locator(".thumbnail")).toHaveCSS("width", "82px");
+    await card.getByRole("button", { name: "预览 loading-animation.png" }).click();
+    await expect(page.getByRole("img", { name: "loading-animation.png" })).toBeVisible();
+    await page.getByRole("button", { name: "关闭" }).click();
+    await expect(card.locator(".thumbnail")).toHaveCSS("width", "82px");
+  } finally {
+    releasePreview();
+    await context.close();
+  }
+});
+
+test("large images fit the preview on desktop and mobile, and zoom remains clipped", async ({ page }, testInfo) => {
+  await login(page);
+  const assertFits = async () => {
+    await expect.poll(() => page.locator(".image-content img").evaluate((image) => {
+      const box = image.getBoundingClientRect();
+      const viewport = document.querySelector(".image-viewport")!.getBoundingClientRect();
+      return box.width > 0 && box.height > 0 && box.left >= viewport.left - 1 && box.top >= viewport.top - 1 &&
+        box.right <= viewport.right + 1 && box.bottom <= viewport.bottom + 1;
+    })).toBe(true);
+    expect(await page.getByRole("dialog").evaluate((element) => element.scrollWidth <= element.clientWidth + 1 && element.scrollHeight <= element.clientHeight + 1)).toBe(true);
+  };
+  for (const [width, height] of [[4096, 1024], [1000, 5000]]) {
+    const data = await page.evaluate(([width, height]) => {
+      const canvas = document.createElement("canvas");
+      canvas.width = width; canvas.height = height;
+      const context = canvas.getContext("2d")!;
+      const gradient = context.createLinearGradient(0, 0, width, height);
+      gradient.addColorStop(0, "#146c55"); gradient.addColorStop(1, "#e6d18a");
+      context.fillStyle = gradient; context.fillRect(0, 0, width, height);
+      return canvas.toDataURL("image/jpeg").split(",")[1];
+    }, [width, height]);
+    const name = `large-${width}-${height}.jpg`;
+    await page.locator('input[type="file"]').first().setInputFiles({ name, mimeType: "image/jpeg", buffer: Buffer.from(data, "base64") });
+    await page.locator(".file-card").filter({ hasText: name }).first().getByRole("button", { name: `预览 ${name}` }).click();
+    await expect(page.getByRole("img", { name, exact: true })).toBeVisible();
+    await assertFits();
+    await page.getByRole("button", { name: "放大", exact: true }).click();
+    await expect(page.locator(".image-viewport")).toHaveCSS("overflow", "hidden");
+    await page.getByRole("button", { name: "适应窗口" }).click();
+    await assertFits();
+    await page.setViewportSize({ width: 390, height: 780 });
+    await page.getByRole("button", { name: "适应窗口" }).click();
+    await assertFits();
+    if (height > width) await page.screenshot({ path: testInfo.outputPath("large-image-mobile.png"), animations: "disabled" });
+    await page.getByRole("button", { name: "关闭", exact: true }).click();
+    await page.setViewportSize({ width: 1280, height: 720 });
+  }
+});
+
+test("connection latency and speed tests report the actual HTTPS path", async ({ page }) => {
+  await login(page);
+  await page.getByRole("button", { name: /连接状态：/ }).click();
+  await page.getByRole("button", { name: "测试连接延迟" }).click();
+  const result = page.getByRole("status").filter({ hasText: "平均" });
+  await expect(result).toContainText("成功 5/5");
+  await expect(result).toContainText("实测路径：HTTPS");
+  await page.getByRole("button", { name: "测试传输速度" }).click();
+  const speed = page.getByLabel("传输速度测试结果");
+  await expect(speed).toContainText("下载");
+  await expect(speed).toContainText("上传");
+  await expect(speed).toContainText("实测路径：HTTPS");
+  await expect.poll(async () => (await speed.innerText()).match(/MiB\/s/g)?.length ?? 0).toBe(2);
+  await expect.poll(async () => (await speed.innerText()).match(/Mbps/g)?.length ?? 0).toBe(2);
+  await expect(page.getByRole("button", { name: "测试传输速度" })).toBeEnabled();
+});
+
+test("canceling a speed test stops before upload and allows a new test", async ({ page }) => {
+  await login(page);
+  await page.getByRole("button", { name: /连接状态：/ }).click();
+  const methods: string[] = [];
+  let releaseDownload!: () => void;
+  const downloadGate = new Promise<void>((resolve) => { releaseDownload = resolve; });
+  let finishRoute!: () => void;
+  const routeFinished = new Promise<void>((resolve) => { finishRoute = resolve; });
+  const speedRoute = /\/api\/connection\/speed(?:\?|$)/;
+  await page.route(speedRoute, async (route) => {
+    methods.push(route.request().method());
+    try {
+      await downloadGate;
+      await route.abort("aborted").catch(() => {});
+    } finally { finishRoute(); }
+  });
+  try {
+    const downloadRequest = page.waitForRequest((request) => new URL(request.url()).pathname === "/api/connection/speed");
+    await page.getByRole("button", { name: "测试传输速度" }).click();
+    expect((await downloadRequest).method()).toBe("GET");
+    await page.getByRole("button", { name: "取消测试" }).click();
+    await expect(page.getByRole("button", { name: "测试传输速度" })).toBeEnabled();
+    releaseDownload();
+    await routeFinished;
+    expect(methods).toEqual(["GET"]);
+    await page.unroute(speedRoute);
+
+    await page.getByRole("button", { name: "测试传输速度" }).click();
+    const result = page.getByLabel("传输速度测试结果");
+    await expect(result).toContainText("下载");
+    await expect(result).toContainText("上传");
+    await expect.poll(async () => (await result.innerText()).match(/MiB\/s/g)?.length ?? 0).toBe(2);
+    await expect(page.getByRole("button", { name: "测试传输速度" })).toBeEnabled();
+  } finally {
+    releaseDownload();
+    await page.unroute(speedRoute);
+  }
+});
+
 test("two devices receive animated messages and preview real images and PDFs", async ({ browser }, testInfo) => {
   const contextA = await browser.newContext({ serviceWorkers: "block" });
   const contextB = await browser.newContext({ serviceWorkers: "block" });

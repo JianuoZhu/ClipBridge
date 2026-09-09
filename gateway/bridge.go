@@ -59,8 +59,10 @@ func allowedRequest(method, path string, size int64) bool {
 		return false
 	}
 	switch p {
-	case "/api/session", "/api/events", "/api/items":
+	case "/api/session", "/api/events", "/api/items", "/api/connection/ping":
 		return method == "GET"
+	case "/api/connection/speed":
+		return (method == "GET" || method == "POST") && size <= 2*1024*1024
 	case "/api/items/text", "/api/items/file":
 		return method == "POST"
 	case "/api/library":
@@ -364,7 +366,7 @@ func (b *bridge) forward(frame wireFrame) error {
 		req.Header.Set("X-Clip-Request", "1")
 	}
 	for k, v := range frame.Headers {
-		if requestHeaders[strings.ToLower(k)] {
+		if requestHeaders[strings.ToLower(k)] || (parsed.Path == "/api/connection/speed" && strings.EqualFold(k, "content-encoding")) {
 			req.Header.Set(k, v)
 		}
 	}

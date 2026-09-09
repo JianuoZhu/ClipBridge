@@ -193,6 +193,55 @@ describe("home transport lifecycle", () => {
     expect(Peer.all).toHaveLength(2);
     expect(getTransportSnapshot().mode).toBe("direct");
   });
+
+  it("keeps a safe, actionable failure diagnosis while a new attempt is pending", async () => {
+    fetchMock.mockImplementation(async (path: string) => path === "/api/p2p/config"
+      ? Response.json({ enabled: true })
+      : Response.json({ code: "P2P_GATEWAY_AUTH_FAILED", error: "private-secret 192.168.1.2 raw SDP" }, { status: 503 }));
+    startTransport();
+    await settle();
+    expect(getTransportSnapshot()).toMatchObject({ mode: "unavailable", diagnostics: {
+      stage: "offer", offerHttpStatus: 503, errorCode: "P2P_GATEWAY_AUTH_FAILED",
+      lastFailure: { stage: "offer", code: "P2P_GATEWAY_AUTH_FAILED" },
+    } });
+    expect(getTransportSnapshot().detail).toContain("密钥不一致");
+    expect(JSON.stringify(getTransportSnapshot())).not.toMatch(/private-secret|192\.168|raw SDP/);
+    fetchMock.mockImplementationOnce(() => new Promise(() => {}));
+    retryTransport();
+    expect(getTransportSnapshot()).toMatchObject({ mode: "connecting", diagnostics: {
+      stage: "config", lastFailure: { code: "P2P_GATEWAY_AUTH_FAILED" },
+    } });
+  });
+
+  it("gives ICE its own budget after slow HTTPS signaling", async () => {
+    vi.useFakeTimers();
+    fetchMock.mockImplementationOnce(() => new Promise((resolve) => setTimeout(() => resolve(Response.json({ enabled: true })), 14_000)));
+    vi.spyOn(Peer.prototype, "setRemoteDescription").mockImplementation(function (this: Peer) {
+      return new Promise<void>((resolve) => setTimeout(() => {
+        this.connectionState = "connected";
+        this.channels[0].open();
+        this.dispatchEvent(new Event("connectionstatechange"));
+        resolve();
+      }, 3_000));
+    });
+    startTransport();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(getTransportSnapshot()).toMatchObject({ mode: "connecting", diagnostics: { stage: "ice" } });
+    await vi.advanceTimersByTimeAsync(2_000);
+    expect(getTransportSnapshot().mode).toBe("direct");
+  });
+
+  it("bounds ICE separately and records the failure before closing the peer", async () => {
+    vi.useFakeTimers();
+    vi.spyOn(Peer.prototype, "setRemoteDescription").mockResolvedValue(undefined);
+    startTransport();
+    await settle();
+    await vi.advanceTimersByTimeAsync(15_000);
+    expect(getTransportSnapshot()).toMatchObject({ mode: "unavailable", diagnostics: {
+      stage: "ice", errorCode: "P2P_ICE_TIMEOUT", offerHttpStatus: 200,
+    } });
+    expect(Peer.all[0].connectionState).toBe("closed");
+  });
 });
 
 describe("HTTP-over-WebRTC request safety", () => {

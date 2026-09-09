@@ -7,6 +7,7 @@ import http from "node:http";
 import { createSession, hashToken } from "../src/auth.js";
 import { loadConfig } from "../src/config.js";
 import { createClipServer } from "../src/server.js";
+import { createP2pSignaling } from "../src/p2p.js";
 import { Store } from "../src/store.js";
 import { listenOnLoopback } from "./support/listen.js";
 
@@ -90,16 +91,28 @@ test("gateway identity comes from the authenticated session, not browser-supplie
   assert.equal(received.offer.sdp, offer.sdp);
 });
 
+test("latency probes require a current session and cannot be cached", async (t) => {
+  const ctx = await fixture(t);
+  assert.equal((await fetch(ctx.base + "/api/connection/ping")).status, 401);
+  const response = await ctx.request("/api/connection/ping?sample=1");
+  assert.equal(response.status, 200);
+  assert.match(response.headers.get("cache-control"), /no-store/);
+  assert.deepEqual(await response.json(), { ok: true });
+});
+
 test("disabled, failed and malformed negotiation preserve a usable HTTP service", async (t) => {
   const disabled = await fixture(t, undefined, false);
   assert.equal((await disabled.request("/api/p2p/config").then((r) => r.json())).enabled, false);
-  assert.equal((await disabled.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) })).status, 503);
+  const disabledResponse = await disabled.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
+  assert.equal(disabledResponse.status, 503);
+  assert.equal((await disabledResponse.json()).code, "P2P_DISABLED");
   const failed = await fixture(t, (_req, res) => { res.writeHead(500); res.end("private internal error"); });
   const response = await failed.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
   assert.equal(response.status, 503);
   assert.equal((await response.text()).includes("private internal"), false);
   const invalid = await failed.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer: { ...offer, sdp: "v=0\nm=audio 9\nm=application 9" } }) });
   assert.equal(invalid.status, 400);
+  assert.equal((await invalid.json()).code, "P2P_INVALID_OFFER");
   assert.equal((await failed.request("/api/items/text", { method: "POST", body: JSON.stringify({ text: "HTTPS still saves" }) })).status, 201);
 });
 
@@ -119,5 +132,57 @@ test("signaling has a per-session negotiation rate bound", async (t) => {
     assert.equal(response.status, 200);
     await response.arrayBuffer();
   }
-  assert.equal((await ctx.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) })).status, 429);
+  const limited = await ctx.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
+  assert.equal(limited.status, 429);
+  assert.equal((await limited.json()).code, "P2P_RATE_LIMITED");
+});
+
+test("gateway failures have actionable codes without forwarding private gateway errors", async (t) => {
+  for (const [status, code] of [[401, "P2P_GATEWAY_AUTH_FAILED"], [403, "P2P_GATEWAY_AUTH_FAILED"],
+    [504, "P2P_ICE_GATHER_TIMEOUT"], [503, "P2P_GATEWAY_BUSY"], [400, "P2P_GATEWAY_REJECTED"], [500, "P2P_GATEWAY_REJECTED"]]) {
+    await t.test(String(status), async (t) => {
+      const ctx = await fixture(t, (_req, res) => { res.writeHead(status); res.end(`private ${secret} 192.168.1.5 SDP`); });
+      const response = await ctx.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
+      assert.equal(response.status, 503);
+      const payload = await response.json();
+      assert.deepEqual(Object.keys(payload).sort(), ["code", "error"]);
+      assert.equal(payload.code, code);
+      assert.match(payload.error, /HTTPS/);
+      assert.doesNotMatch(JSON.stringify(payload), /private|192\.168|SDP|test_gateway_secret/);
+    });
+  }
+});
+
+test("malformed and oversized answers are distinguishable from an unreachable gateway", async (t) => {
+  for (const body of ["private invalid JSON", JSON.stringify({ answer: { type: "offer", sdp: "v=0" } }), "x".repeat(129 * 1024)]) {
+    await t.test(`answer length ${body.length}`, async (t) => {
+      const ctx = await fixture(t, (_req, res) => res.end(body));
+      const response = await ctx.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
+      assert.equal(response.status, 503);
+      assert.equal((await response.json()).code, "P2P_GATEWAY_BAD_ANSWER");
+    });
+  }
+  const unreachable = await fixture(t, (req) => req.socket.destroy());
+  const response = await unreachable.request("/api/p2p/offer", { method: "POST", body: JSON.stringify({ offer }) });
+  assert.equal(response.status, 503);
+  assert.equal((await response.json()).code, "P2P_GATEWAY_UNREACHABLE");
+});
+
+test("gateway deadline and user cancellation keep separate diagnostic codes", async (t) => {
+  const input = { body: { offer }, session: { token: "session", expires_at: Date.now() + 60_000 }, cookieName: "clip_session", host: "localhost" };
+  const signaling = createP2pSignaling({ enabled: true, gatewayUrl: "http://127.0.0.1:8090", secret });
+  t.after(() => signaling.close());
+  t.mock.method(globalThis, "fetch", async (_url, { signal }) => {
+    if (signal.aborted) throw signal.reason;
+    await new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  });
+  const originalTimeout = AbortSignal.timeout;
+  const timeoutMock = t.mock.method(AbortSignal, "timeout", (ms) => {
+    assert.equal(ms, 10_000);
+    return AbortSignal.abort(new DOMException("Timed out", "TimeoutError"));
+  });
+  await assert.rejects(signaling.offer(input), { status: 503, code: "P2P_GATEWAY_TIMEOUT" });
+  timeoutMock.mock.restore();
+  assert.equal(AbortSignal.timeout, originalTimeout);
+  await assert.rejects(signaling.offer({ ...input, signal: AbortSignal.abort() }), { status: 503, code: "P2P_NEGOTIATION_CANCELLED" });
 });

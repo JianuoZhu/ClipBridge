@@ -1,9 +1,99 @@
 /** Browser ↔ home transport. HTTPS remains available while ICE is connecting. */
+export type NegotiationStage = "config" | "create-offer" | "gathering" | "offer" | "ice" | "connected" | "disabled" | "unsupported";
+type CandidateType = "host" | "srflx" | "prflx" | "relay";
+type CandidateCounts = Readonly<Record<CandidateType, number>>;
+type PeerDiagnostics = Readonly<{
+  connectionState?: RTCPeerConnectionState;
+  iceConnectionState?: RTCIceConnectionState;
+  iceGatheringState?: RTCIceGatheringState;
+  localCandidates: CandidateCounts;
+  remoteCandidates: CandidateCounts;
+}>;
+export type TransportDiagnostics = PeerDiagnostics & Readonly<{
+  attemptStartedAt: string;
+  stage: NegotiationStage;
+  enabled?: boolean;
+  configHttpStatus?: number;
+  offerHttpStatus?: number;
+  gatheringTimedOut?: boolean;
+  stunErrorCodes?: readonly number[];
+  selectedPair?: Readonly<{ local: CandidateType; remote: CandidateType }>;
+  errorCode?: string;
+  lastFailure?: PeerDiagnostics & Readonly<{
+    at: string; stage: NegotiationStage; code: string; configHttpStatus?: number; offerHttpStatus?: number;
+  }>;
+}>;
 export type TransportSnapshot = Readonly<{
   mode: "http" | "connecting" | "direct" | "relay" | "unavailable";
   detail: string;
   rttMs?: number;
+  diagnostics?: TransportDiagnostics;
 }>;
+
+const errorDetails: Record<string, string> = {
+  P2P_DISABLED: "家中服务器未启用直连；请检查 CLIP_P2P_ENABLED 并重新创建服务。",
+  P2P_UNSUPPORTED: "此浏览器不支持 WebRTC；请使用支持 WebRTC 的浏览器并检查浏览器策略。",
+  P2P_SESSION_REQUIRED: "登录状态已失效或请求被拒绝；请刷新页面并重新登录。",
+  P2P_CONFIG_HTTP: "网站未能返回直连配置；请检查 /api/p2p/config 的 HTTP 状态及网站服务日志。",
+  P2P_CONFIG_NETWORK: "无法通过 HTTPS 取得直连配置；请检查网站连接及反向代理。",
+  P2P_CONFIG_TIMEOUT: "取得直连配置超时；请先检查网站 HTTPS 链路。",
+  P2P_CONFIG_INVALID: "网站返回了无效的直连配置；请确认前后端均已更新。",
+  P2P_INVALID_OFFER: "连接协商请求无效；请更新前后端并重新尝试。",
+  P2P_RATE_LIMITED: "直连尝试过于频繁；请稍候，系统会自动重试。",
+  P2P_GATEWAY_UNREACHABLE: "网站无法访问家庭 P2P 网关；请检查网关是否运行及内部地址、端口。",
+  P2P_GATEWAY_TIMEOUT: "家庭 P2P 网关响应超时；请检查网关日志和家庭服务器负载。",
+  P2P_GATEWAY_AUTH_FAILED: "网站与 P2P 网关的密钥不一致；请统一 CLIP_P2P_SECRET 并重新创建两项服务。",
+  P2P_ICE_GATHER_TIMEOUT: "家庭网关采集候选地址超时；请检查家中 STUN 访问及网关日志。",
+  P2P_GATEWAY_BUSY: "家庭 P2P 网关连接数已满；请稍候重试并检查网关负载。",
+  P2P_GATEWAY_REJECTED: "家庭 P2P 网关拒绝了协商；请核对网关日志及前后端版本。",
+  P2P_GATEWAY_BAD_ANSWER: "家庭 P2P 网关返回了无效的协商结果；请检查网关版本与日志。",
+  P2P_NEGOTIATION_CANCELLED: "连接协商已取消；请重新尝试。",
+  P2P_OFFER_HTTP: "网站未能完成连接协商；请查看 /api/p2p/offer 的 HTTP 状态及服务日志。",
+  P2P_OFFER_NETWORK: "连接协商请求未能通过 HTTPS 完成；请检查网站及反向代理日志。",
+  P2P_OFFER_TIMEOUT: "连接协商阶段耗尽了连接时间；请检查网站延迟及网关的候选采集日志。",
+  P2P_OFFER_INVALID: "浏览器无法应用网关的协商结果；请检查前后端版本及网关日志。",
+  P2P_BROWSER_NEGOTIATION: "浏览器无法创建 WebRTC 连接；请检查浏览器的 WebRTC 策略和扩展。",
+  P2P_GATHER_TIMEOUT: "浏览器采集候选地址时耗尽了连接时间；请检查本机网络及 STUN 可达性。",
+  P2P_ICE_TIMEOUT: "协商成功，但打洞未在时间内完成；请对比同 Wi-Fi 与蜂窝网络，并检查家庭 UDP、防火墙和 NAT。",
+  P2P_ICE_FAILED: "浏览器与家庭节点的 ICE 连接失败；请检查双方候选类型、家庭 UDP、防火墙和 NAT。",
+  P2P_CHANNEL_CLOSED: "加密数据通道已关闭；请检查家庭网关日志和网络稳定性。",
+};
+export function transportErrorDetail(code: string): string {
+  return errorDetails[code] || "家中直连暂不可用；请查看连接诊断和家庭网关日志。";
+}
+class NegotiationError extends Error {
+  constructor(readonly code: string) { super(transportErrorDetail(code)); }
+}
+const emptyCandidates = (): CandidateCounts => ({ host: 0, srflx: 0, prflx: 0, relay: 0 });
+function candidateType(value: unknown): CandidateType | undefined {
+  return value === "host" || value === "srflx" || value === "prflx" || value === "relay" ? value : undefined;
+}
+function countCandidates(sdp?: string): CandidateCounts {
+  const counts = { ...emptyCandidates() };
+  for (const line of sdp?.split(/\r?\n/) || []) {
+    if (!line.startsWith("a=candidate:")) continue;
+    const type = candidateType(/\styp\s+(\w+)(?:\s|$)/.exec(line)?.[1]);
+    if (type) counts[type]++;
+  }
+  return counts;
+}
+function peerDiagnostics(pc: RTCPeerConnection): PeerDiagnostics {
+  return {
+    connectionState: pc.connectionState, iceConnectionState: pc.iceConnectionState, iceGatheringState: pc.iceGatheringState,
+    localCandidates: countCandidates(pc.localDescription?.sdp), remoteCandidates: countCandidates(pc.remoteDescription?.sdp),
+  };
+}
+
+async function responseErrorCode(response: Response, fallback: string): Promise<string> {
+  if (response.status === 401 || response.status === 403) return "P2P_SESSION_REQUIRED";
+  try {
+    const body: unknown = await response.json();
+    const code = typeof body === "object" && body !== null && "code" in body ? body.code : undefined;
+    // Only known codes cross into diagnostics. Server error text may include private data.
+    if (typeof code === "string" && Object.hasOwn(errorDetails, code)) return code;
+  } catch { /* A reverse proxy may return HTML instead of the API error envelope. */ }
+  return fallback;
+}
 
 const CHUNK_BYTES = 16 * 1024;
 const WINDOW_BYTES = 1024 * 1024;
@@ -40,9 +130,14 @@ export function isDirectTransport(): boolean {
   return Boolean(connection?.ready && (snapshot.mode === "direct" || snapshot.mode === "relay"));
 }
 function publish(next: TransportSnapshot) {
-  if (next.mode === snapshot.mode && next.detail === snapshot.detail && next.rttMs === snapshot.rttMs) return;
-  snapshot = Object.freeze(next);
+  const diagnostics = Object.hasOwn(next, "diagnostics") ? next.diagnostics : snapshot.diagnostics;
+  if (next.mode === snapshot.mode && next.detail === snapshot.detail && next.rttMs === snapshot.rttMs && diagnostics === snapshot.diagnostics) return;
+  snapshot = Object.freeze({ ...next, diagnostics });
   for (const listener of listeners) listener();
+}
+function diagnose(patch: Partial<TransportDiagnostics>) {
+  if (!snapshot.diagnostics) return;
+  publish({ ...snapshot, diagnostics: Object.freeze({ ...snapshot.diagnostics, ...patch }) });
 }
 function abortError(message = "操作已取消"): DOMException { return new DOMException(message, "AbortError"); }
 function isAbort(error: unknown): boolean { return typeof error === "object" && error !== null && "name" in error && error.name === "AbortError"; }
@@ -67,6 +162,11 @@ function scheduleRetry() {
 }
 function lost(peer: Peer, message: string) {
   if (!current(peer)) return;
+  const facts = peerDiagnostics(peer.pc);
+  diagnose({ ...facts, errorCode: "P2P_CHANNEL_CLOSED", lastFailure: {
+    ...facts, at: new Date().toISOString(), stage: "connected", code: "P2P_CHANNEL_CLOSED",
+    configHttpStatus: snapshot.diagnostics?.configHttpStatus, offerHttpStatus: snapshot.diagnostics?.offerHttpStatus,
+  } });
   disposePeer(new Error("直连已中断，尚未完成的操作请检查结果后重试"));
   publish({ mode: "unavailable", detail: message + "，当前使用 HTTPS" });
   scheduleRetry();
@@ -84,8 +184,11 @@ async function updateStats(peer: Peer) {
     });
     const local = pair && report.get(pair.localCandidateId);
     const remote = pair && report.get(pair.remoteCandidateId);
+    const localType = candidateType(local?.candidateType);
+    const remoteType = candidateType(remote?.candidateType);
+    diagnose({ ...peerDiagnostics(peer.pc), stage: "connected", selectedPair: localType && remoteType ? { local: localType, remote: remoteType } : undefined, errorCode: undefined });
     // A connected RTCPeerConnection alone does not establish that TURN was avoided.
-    if (!pair || !local?.candidateType || !remote?.candidateType) {
+    if (!pair || !localType || !remoteType) {
       publish({ mode: "connecting", detail: "加密通道已连接，正在确认实际传输路径" });
       return;
     }
@@ -96,11 +199,11 @@ async function updateStats(peer: Peer) {
   } catch { /* Stats may be unavailable briefly during ICE negotiation; never guess the route. */ }
 }
 
-function gatherIce(pc: RTCPeerConnection, signal: AbortSignal): Promise<void> {
+function gatherIce(pc: RTCPeerConnection, signal: AbortSignal): Promise<boolean> {
   if (signal.aborted) return Promise.reject(abortError());
-  if (pc.iceGatheringState === "complete") return Promise.resolve();
+  if (pc.iceGatheringState === "complete") return Promise.resolve(true);
   return new Promise((resolve, reject) => {
-    const finish = () => { clean(); resolve(); };
+    const finish = () => { clean(); resolve(pc.iceGatheringState === "complete"); };
     const change = () => { if (pc.iceGatheringState === "complete") finish(); };
     const abort = () => { clean(); reject(abortError()); };
     const timeout = setTimeout(finish, 4_000);
@@ -115,32 +218,82 @@ async function connect() {
   const token = generation;
   const controller = new AbortController();
   connecting = controller;
-  const deadline = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
+  let stage: NegotiationStage = "config";
+  let abortCode: string | undefined;
+  let failed = false;
+  // Slow HTTPS signaling must not consume the time available for ICE itself.
+  // Each phase has a deadline; a complete attempt remains bounded by 30 seconds.
+  let deadline = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
   const valid = () => active && generation === token && connecting === controller && !controller.signal.aborted;
-  publish({ mode: "connecting", detail: "正在尝试直连家中服务器，当前使用 HTTPS" });
+  const setStage = (next: NegotiationStage) => { stage = next; diagnose({ stage: next }); };
+  const fail = (error: unknown) => {
+    if (failed || !active || generation !== token || connecting !== controller) return;
+    failed = true;
+    const timeoutCodes: Partial<Record<NegotiationStage, string>> = {
+      config: "P2P_CONFIG_TIMEOUT", gathering: "P2P_GATHER_TIMEOUT", offer: "P2P_OFFER_TIMEOUT", ice: "P2P_ICE_TIMEOUT",
+    };
+    const defaultCodes: Partial<Record<NegotiationStage, string>> = {
+      config: "P2P_CONFIG_NETWORK", offer: "P2P_OFFER_NETWORK", ice: "P2P_OFFER_INVALID",
+    };
+    const code = error instanceof NegotiationError ? error.code : abortCode || (controller.signal.aborted
+      ? timeoutCodes[stage] || "P2P_BROWSER_NEGOTIATION" : defaultCodes[stage] || "P2P_BROWSER_NEGOTIATION");
+    const facts = connection ? peerDiagnostics(connection.pc) : { localCandidates: emptyCandidates(), remoteCandidates: emptyCandidates() };
+    diagnose({ ...facts, stage, errorCode: code, lastFailure: {
+      ...facts, at: new Date().toISOString(), stage, code,
+      configHttpStatus: snapshot.diagnostics?.configHttpStatus, offerHttpStatus: snapshot.diagnostics?.offerHttpStatus,
+    } });
+    disposePeer(new Error("无法建立家中直连"));
+    publish({ mode: "unavailable", detail: transportErrorDetail(code) + " 当前使用 HTTPS，稍后自动重试。" });
+    scheduleRetry();
+  };
+  publish({ mode: "connecting", detail: "正在尝试直连家中服务器，当前使用 HTTPS", diagnostics: {
+    attemptStartedAt: new Date().toISOString(), stage,
+    localCandidates: emptyCandidates(), remoteCandidates: emptyCandidates(), lastFailure: snapshot.diagnostics?.lastFailure,
+  } });
   try {
     const response = await fetch("/api/p2p/config", { credentials: "same-origin", cache: "no-store", signal: controller.signal });
     if (!valid()) return;
-    if (!response.ok) throw new Error("无法获取直连配置");
-    const config: { enabled?: boolean; iceServers?: RTCIceServer[] } = await response.json();
+    diagnose({ configHttpStatus: response.status });
+    if (!response.ok) throw new NegotiationError(await responseErrorCode(response, "P2P_CONFIG_HTTP"));
+    let config: { enabled?: boolean; iceServers?: RTCIceServer[] };
+    try {
+      config = await response.json();
+      if (!config || typeof config.enabled !== "boolean" || (config.iceServers !== undefined && !Array.isArray(config.iceServers))) throw new Error();
+    } catch { throw new NegotiationError("P2P_CONFIG_INVALID"); }
     if (!valid()) return;
+    diagnose({ enabled: config.enabled });
     if (!config.enabled) {
-      publish({ mode: "http", detail: "家中服务器尚未启用直连，当前使用 HTTPS" });
+      setStage("disabled");
+      diagnose({ errorCode: "P2P_DISABLED" });
+      publish({ mode: "http", detail: transportErrorDetail("P2P_DISABLED") + " 当前使用 HTTPS。" });
       return;
     }
     if (typeof RTCPeerConnection === "undefined") {
-      publish({ mode: "unavailable", detail: "此浏览器不支持 WebRTC，当前使用 HTTPS" });
+      setStage("unsupported");
+      diagnose({ errorCode: "P2P_UNSUPPORTED" });
+      publish({ mode: "unavailable", detail: transportErrorDetail("P2P_UNSUPPORTED") + " 当前使用 HTTPS。" });
       return;
     }
+    setStage("create-offer");
     const pc = new RTCPeerConnection({ iceServers: config.iceServers || [] });
     const control = pc.createDataChannel("clip-control-v1", { ordered: true });
     const peer: Peer = { pc, control, generation: token, ready: false, pending: new Set() };
     connection = peer;
+    const changed = () => { if (current(peer)) diagnose(peerDiagnostics(pc)); };
+    pc.addEventListener("iceconnectionstatechange", changed);
+    pc.addEventListener("icegatheringstatechange", changed);
+    pc.addEventListener("icecandidate", changed);
+    pc.addEventListener("icecandidateerror", (event) => {
+      if (!current(peer) || !Number.isInteger(event.errorCode)) return;
+      const codes = snapshot.diagnostics?.stunErrorCodes || [];
+      if (!codes.includes(event.errorCode)) diagnose({ stunErrorCodes: [...codes, event.errorCode].slice(0, 8) });
+    });
+    changed();
     const opened = new Promise<void>((resolve, reject) => {
       const abort = () => reject(abortError());
       controller.signal.addEventListener("abort", abort, { once: true });
       control.addEventListener("open", () => { controller.signal.removeEventListener("abort", abort); resolve(); }, { once: true });
-      control.addEventListener("close", () => { controller.signal.removeEventListener("abort", abort); reject(new Error("直连通道已关闭")); }, { once: true });
+      control.addEventListener("close", () => { controller.signal.removeEventListener("abort", abort); reject(new NegotiationError("P2P_CHANNEL_CLOSED")); }, { once: true });
       // Negotiation can fail before this promise is awaited.
     });
     void opened.catch(() => {});
@@ -148,9 +301,10 @@ async function connect() {
     control.addEventListener("error", () => { if (peer.ready) lost(peer, "直连连接发生错误"); });
     pc.addEventListener("connectionstatechange", () => {
       if (!current(peer)) return;
+      changed();
       if (pc.connectionState === "failed" || pc.connectionState === "closed") {
         if (peer.ready) lost(peer, "直连连接失败");
-        else controller.abort();
+        else { abortCode = "P2P_ICE_FAILED"; controller.abort(); }
       } else if (pc.connectionState === "disconnected") {
         peer.ready = false;
         publish({ mode: "connecting", detail: "直连暂时中断，正在恢复；新请求使用 HTTPS" });
@@ -163,18 +317,32 @@ async function connect() {
       }
     });
     await pc.setLocalDescription(await pc.createOffer());
-    await gatherIce(pc, controller.signal);
     if (!valid()) return;
+    setStage("gathering");
+    const gathered = await gatherIce(pc, controller.signal);
+    if (!valid()) return;
+    diagnose({ ...peerDiagnostics(pc), gatheringTimedOut: !gathered });
+    setStage("offer");
     const answerResponse = await fetch("/api/p2p/offer", {
       method: "POST", credentials: "same-origin", signal: controller.signal,
       headers: { "Content-Type": "application/json", "X-Clip-Request": "1" },
       body: JSON.stringify({ offer: { type: "offer", sdp: pc.localDescription?.sdp } }),
     });
     if (!valid()) return;
-    if (!answerResponse.ok) throw new Error("家中直连服务暂时不可用");
-    const answer: { answer: RTCSessionDescriptionInit } = await answerResponse.json();
+    diagnose({ offerHttpStatus: answerResponse.status });
+    if (!answerResponse.ok) throw new NegotiationError(await responseErrorCode(answerResponse, "P2P_OFFER_HTTP"));
+    let answer: { answer: RTCSessionDescriptionInit };
+    try {
+      answer = await answerResponse.json();
+      if (!answer?.answer || answer.answer.type !== "answer" || typeof answer.answer.sdp !== "string") throw new Error();
+    } catch { throw new NegotiationError("P2P_OFFER_INVALID"); }
     if (!valid()) return;
+    clearTimeout(deadline);
+    deadline = setTimeout(() => controller.abort(), CONNECT_TIMEOUT_MS);
+    setStage("ice");
     await pc.setRemoteDescription(answer.answer);
+    if (!valid()) return;
+    diagnose(peerDiagnostics(pc));
     await opened;
     if (!valid()) return;
     peer.ready = true;
@@ -183,20 +351,12 @@ async function connect() {
     if (!valid() || !current(peer) || !peer.ready) return;
     peer.statsTimer = setInterval(() => void updateStats(peer), 10_000);
   } catch (error) {
-    if (active && generation === token && connecting === controller) {
-      disposePeer(new Error("无法建立家中直连"));
-      publish({ mode: "unavailable", detail: isAbort(error) ? "打洞超时，当前使用 HTTPS；稍后自动重试" : "家中直连暂时不可用，当前使用 HTTPS；稍后自动重试" });
-      scheduleRetry();
-    }
+    fail(error);
   } finally {
     clearTimeout(deadline);
-    if (connecting === controller) connecting = undefined;
     // An abort can race with a fetch that resolves instead of rejecting.
-    if (active && generation === token && controller.signal.aborted) {
-      disposePeer(new Error("直连建立超时"));
-      publish({ mode: "unavailable", detail: "打洞超时，当前使用 HTTPS；稍后自动重试" });
-      scheduleRetry();
-    }
+    if (controller.signal.aborted) fail(abortError());
+    if (connecting === controller) connecting = undefined;
   }
 }
 
@@ -229,7 +389,7 @@ export function stopTransport(): void {
     listening = false;
   }
   failures = 0;
-  publish({ mode: "http", detail: "通过 HTTPS 连接家中服务器" });
+  publish({ mode: "http", detail: "通过 HTTPS 连接家中服务器", diagnostics: undefined });
 }
 export function retryTransport(): void {
   if (!active) return;

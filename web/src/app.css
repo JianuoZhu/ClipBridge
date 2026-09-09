@@ -75,6 +75,16 @@
 .content-card.is-new { border-color: var(--ring); animation: received 1.5s ease-out both; }
 .content-card.is-new::after { content: ""; position: absolute; inset: -1px; pointer-events: none; border-radius: inherit; box-shadow: 0 0 0 2px color-mix(in srgb, var(--ring) 35%, transparent); animation: received-ring 1.5s ease-out; }
 .type-icon { width: 39px; height: 39px; flex: none; display: grid; place-items: center; border-radius: 10px; background: var(--accent); color: var(--primary); }
+.thumbnail { position: relative; display: grid; place-items: center; width: 86px; min-width: 86px; height: 68px; overflow: hidden; padding: 0; border: 1px solid var(--border); border-radius: 11px; background: var(--muted); color: var(--muted-foreground); }
+.thumbnail img { width: 100%; height: 100%; object-fit: cover; transition: transform 180ms ease, opacity 180ms; }
+.thumbnail-loading { background: linear-gradient(100deg, var(--muted), var(--card-raised), var(--muted)); background-size: 200% 100%; animation: shimmer 1.2s infinite; }
+.thumbnail-loading img { opacity: 0; }
+.thumbnail-interactive { cursor: zoom-in; }
+.thumbnail-interactive:hover img { transform: scale(1.045); }
+.thumbnail:disabled { opacity: 1; }
+.thumbnail svg { width: 23px; height: 23px; }
+.thumbnail-caption, .thumbnail-retry { position: absolute; inset: auto 4px 4px; padding: 2px 5px; border-radius: 5px; background: #101817cc; color: white; font-size: 9px; line-height: 1.3; }
+.thumbnail-retry { display: flex; align-items: center; gap: 3px; cursor: pointer; }
 .content-body { min-width: 0; flex: 1; }
 .card-meta { display: flex; align-items: center; gap: 7px; color: var(--muted-foreground); font-size: 10px; }
 .card-meta time { margin-left: auto; }.card-meta b { padding: 1px 5px; border-radius: 5px; background: var(--primary); color: var(--primary-foreground); font-size: 9px; }

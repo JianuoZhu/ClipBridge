@@ -59,6 +59,11 @@ func TestAllowedRequest(t *testing.T) {
 		want         bool
 	}{
 		{"GET", "/api/session", 0, true}, {"GET", "/api/events", 0, true}, {"GET", "/api/items", 0, true},
+		{"GET", "/api/connection/ping?sample=1", 0, true}, {"POST", "/api/connection/ping", 0, false},
+		{"GET", "/api/connection/speed?bytes=65536", 0, true}, {"POST", "/api/connection/speed?bytes=2097152", 2 * 1024 * 1024, true},
+		{"POST", "/api/connection/speed?bytes=2097153", 2*1024*1024 + 1, false}, {"GET", "/api/connection/speed?bytes=1", 1, false},
+		{"HEAD", "/api/connection/speed?bytes=1", 0, false}, {"DELETE", "/api/connection/speed?bytes=1", 0, false},
+		{"GET", "/api/connection/speed/extra?bytes=1", 0, false}, {"GET", "/api/connection/speed%2f?bytes=1", 0, false},
 		{"POST", "/api/items/text", 20, true}, {"POST", "/api/items/file", 500, true}, {"GET", "/api/items/" + id + "/file", 0, true},
 		{"GET", "/api/items/" + id + "/preview?size=small", 0, true}, {"HEAD", "/api/items/" + id + "/file", 0, true},
 		{"DELETE", "/api/items/" + id, 0, true}, {"PATCH", "/api/library/" + id, 50, true}, {"GET", "/api/library/" + id + "/content", 0, true},
@@ -88,6 +93,44 @@ func fixtureBridge(t *testing.T, handler http.HandlerFunc) (*bridge, *fakeChanne
 	b := newBridge(context.Background(), d, g.client, u, identity{cookie: "clip_session=original", host: "clip.example.com"}, nil)
 	t.Cleanup(b.close)
 	return b, d
+}
+
+func TestSpeedProbePreservesEncodingForBackendValidation(t *testing.T) {
+	b, d := fixtureBridge(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/connection/speed" || r.URL.RawQuery != "bytes=1" || r.Header.Get("Content-Encoding") != "gzip" {
+			t.Errorf("speed probe validation headers lost: %s %v", r.URL, r.Header)
+		}
+		if r.Header.Get("Cookie") != "clip_session=original" || r.Header.Get("X-Clip-Request") != "1" {
+			t.Error("speed probe bypassed trusted identity")
+		}
+		w.WriteHeader(http.StatusUnsupportedMediaType)
+	})
+	incomingFrame(b, wireFrame{Type: "request", Method: "POST", Path: "/api/connection/speed?bytes=1", BodySize: 1,
+		Headers: map[string]string{"content-encoding": "gzip", "cookie": "clip_session=forged"}})
+	b.onMessage(webrtc.DataChannelMessage{Data: []byte{0}})
+	incomingFrame(b, wireFrame{Type: "end"})
+	timer := time.NewTimer(2 * time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case message := <-d.messages:
+			if !message.IsString {
+				continue
+			}
+			var frame wireFrame
+			if err := json.Unmarshal(message.Data, &frame); err != nil {
+				t.Fatal(err)
+			}
+			if frame.Type == "response" {
+				if frame.Status != http.StatusUnsupportedMediaType {
+					t.Fatalf("unexpected response: %+v", frame)
+				}
+				return
+			}
+		case <-timer.C:
+			t.Fatal("no speed validation response")
+		}
+	}
 }
 
 func TestLargeUploadDownloadStreamsWithCreditAndPreservesIdentity(t *testing.T) {

@@ -7,7 +7,7 @@
 
 {$CLIP_DOMAIN} {
     @compressible {
-        not path_regexp rangedFiles ^/api/(?:items|library)/[0-9a-f-]+/(?:file|preview)$
+        not path_regexp uncompressed ^/api/(?:(?:items|library)/[0-9a-f-]+/(?:file|preview)|connection/speed)$
     }
     encode @compressible zstd gzip
     reverse_proxy clip:8080

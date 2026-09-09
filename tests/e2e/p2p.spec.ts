@@ -14,7 +14,7 @@ async function direct(page: Page) {
 async function blockBusinessHttp(page: Page) {
   await page.route("**/api/**", async (route) => {
     const pathname = new URL(route.request().url()).pathname;
-    if (/^\/api\/(items|library|events)(?:\/|$)/.test(pathname)) await route.abort();
+    if (/^\/api\/(items|library|events|connection)(?:\/|$)/.test(pathname)) await route.abort();
     else await route.continue();
   });
 }
@@ -79,6 +79,20 @@ test("two independent home connections persist data after sender closes; file, i
     expect(hash.digest("hex")).toBe(createHash("sha256").update(file).digest("hex"));
     await receiver.getByRole("button", { name: /连接状态：家中直连/ }).click();
     await expect(receiver.getByRole("dialog")).toContainText("这台设备与家中服务器的传输路径");
+    await receiver.getByRole("button", { name: "测试连接延迟" }).click();
+    const latency = receiver.getByRole("status").filter({ hasText: "平均" });
+    await expect(latency).toContainText("成功 5/5");
+    await expect(latency).toContainText("实测路径：家中直连");
+    await receiver.getByRole("button", { name: "测试传输速度" }).click();
+    const speed = receiver.getByLabel("传输速度测试结果");
+    await expect(speed).toContainText("下载");
+    await expect(speed).toContainText("上传");
+    await expect(speed).toContainText("实测路径：家中直连");
+    await expect.poll(async () => (await speed.innerText()).match(/MiB\/s/g)?.length ?? 0).toBe(2);
+    await expect.poll(async () => (await speed.innerText()).match(/Mbps/g)?.length ?? 0).toBe(2);
+    await expect(receiver.getByRole("button", { name: "测试传输速度" })).toBeEnabled();
+    await receiver.getByText("排查详情", { exact: true }).click();
+    await expect(receiver.getByRole("dialog")).toContainText("实际选中路径");
     const screenshot = testInfo.outputPath("p2p-connection-state.png");
     await receiver.screenshot({ path: screenshot, animations: "disabled" });
     await testInfo.attach("p2p-connection-state", { path: screenshot, contentType: "image/png" });
@@ -86,9 +100,15 @@ test("two independent home connections persist data after sender closes; file, i
 });
 
 test("unreachable gateway falls back to HTTP and displays the actual route", async ({ page }) => {
-  await page.route("**/api/p2p/offer", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ error: "test unavailable" }) }));
+  await page.route("**/api/p2p/offer", (route) => route.fulfill({ status: 503, contentType: "application/json", body: JSON.stringify({ code: "P2P_GATEWAY_AUTH_FAILED", error: "private test gateway details" }) }));
   await login(page);
   await expect(page.getByRole("button", { name: /连接状态：HTTPS 备用/ })).toBeVisible();
+  await page.getByRole("button", { name: /连接状态：HTTPS 备用/ }).click();
+  await page.getByText("排查详情", { exact: true }).click();
+  await expect(page.getByRole("dialog")).toContainText("P2P_GATEWAY_AUTH_FAILED");
+  await expect(page.getByRole("dialog")).toContainText("密钥不一致");
+  await expect(page.getByRole("dialog")).not.toContainText("private test gateway details");
+  await page.getByRole("button", { name: "关闭", exact: true }).click();
   const message = `Fallback ${Date.now()}`;
   const request = page.waitForResponse((response) => new URL(response.url()).pathname === "/api/items/text" && response.status() === 201);
   await page.getByLabel("发送文字").fill(message);

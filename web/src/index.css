@@ -71,6 +71,7 @@ textarea { line-height: 1.6; resize: vertical; }
 input:focus, textarea:focus { border-color: var(--ring); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring) 16%, transparent); }
 ::placeholder { color: var(--muted-foreground); opacity: .76; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; }
+.spin { animation: spin 1s linear infinite; }
 .button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px; border: 1px solid transparent;
   border-radius: 10px; cursor: pointer; font-weight: 650; white-space: nowrap;
@@ -120,6 +121,7 @@ input:focus, textarea:focus { border-color: var(--ring); box-shadow: 0 0 0 3px c
 @keyframes fade-in { from { opacity: 0 } }
 @keyframes dialog-in { from { opacity: 0; transform: translate(-50%, calc(-50% + 10px)) scale(.98) } }
 @keyframes menu-in { from { opacity: 0; transform: translateY(-4px) scale(.98) } }
+@keyframes spin { to { transform: rotate(360deg) } }
 @media (max-width: 640px) {
   body { font-size: 14px; }
   input, textarea { font-size: 16px; }

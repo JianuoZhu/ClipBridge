@@ -93,9 +93,11 @@ export function PreviewDialog({ file, sessionKey = 0, onClose, onUnauthorized }:
                 <Button variant="secondary" size="icon" onClick={() => zoomIn()} aria-label="放大"><Plus size={17} /></Button>
                 <DownloadButton file={file} label />
               </div>
-              <TransformComponent wrapperClass="image-stage" contentClass="image-content">
-                {imageSrc ? <img src={imageSrc} alt={file.fileName} onError={() => setError("图片暂时无法预览，请下载查看。")} /> : !error && <div className="preview-state"><LoaderCircle className="spin" />正在读取图片…</div>}
-              </TransformComponent>
+              <div className="image-viewport">
+                <TransformComponent wrapperClass="image-stage" contentClass="image-content">
+                  {imageSrc ? <img src={imageSrc} alt={file.fileName} onError={() => setError("图片暂时无法预览，请下载查看。")} /> : !error && <div className="preview-state"><LoaderCircle className="spin" />正在读取图片…</div>}
+                </TransformComponent>
+              </div>
             </>}
           </TransformWrapper>
         ) : downloadableOnly ? (

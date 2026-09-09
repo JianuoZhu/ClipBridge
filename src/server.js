@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
 import { createP2pSignaling, P2pError } from "./p2p.js";
+import { createConnectionSpeed, ConnectionSpeedError } from "./connection-speed.js";
 import {
   createPasswordVerifier,
   createSession,
@@ -227,6 +228,7 @@ function previewMime(bytes, type) {
 
 export async function createClipServer({ config, store }) {
   const p2p = createP2pSignaling(config.p2p);
+  const connectionSpeed = createConnectionSpeed();
   const pin = config.pin ?? "1223";
   // Bind every session to both credentials and the new role model; upgrading revokes legacy sessions.
   await createPasswordVerifier(hashToken(JSON.stringify(["roles-v1", pin, config.username, config.password])), { store, username: config.username });
@@ -442,6 +444,18 @@ export async function createClipServer({ config, store }) {
     if (request.method === "GET" && pathname === "/api/p2p/config") {
       requireSession(request);
       return json(response, 200, p2p.configuration());
+    }
+
+    if (request.method === "GET" && pathname === "/api/connection/ping") {
+      requireSession(request);
+      response.setHeader("Cache-Control", "no-store");
+      return json(response, 200, { ok: true });
+    }
+
+    if (["GET", "POST"].includes(request.method) && pathname === "/api/connection/speed") {
+      if (request.method === "POST") requireMutationRequest(request);
+      const session = requireSession(request);
+      return connectionSpeed.transfer(request, response, requestUrl, session, () => requireSession(request));
     }
 
     if (request.method === "POST" && pathname === "/api/p2p/offer") {
@@ -786,14 +800,14 @@ export async function createClipServer({ config, store }) {
         response.destroy();
         return;
       }
-      const known = error instanceof HttpError || error instanceof P2pError;
+      const known = error instanceof HttpError || error instanceof P2pError || error instanceof ConnectionSpeedError;
       const status = known ? error.status : 500;
       if (status === 500) console.error("Request failed");
       if (!request.readableEnded) {
         response.setHeader("Connection", "close");
         request.resume();
       }
-      json(response, status, { error: known ? error.message : "服务器内部错误" });
+      json(response, status, { error: known ? error.message : "服务器内部错误", ...(error instanceof P2pError ? { code: error.code } : {}) });
     });
   });
   server.headersTimeout = 15_000;
@@ -808,6 +822,7 @@ export async function createClipServer({ config, store }) {
     server,
     close(callback) {
       p2p.close();
+      connectionSpeed.close();
       clearInterval(cleanupTimer);
       clearInterval(heartbeatTimer);
       for (const client of eventClients.keys()) client.end();

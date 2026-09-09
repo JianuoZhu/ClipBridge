@@ -1,0 +1,19 @@
+.connection-diagnostics { min-width: 0; border-top: 1px solid var(--border); padding-top: 12px; font-size: 12px; line-height: 1.6; }
+.connection-diagnostics summary { cursor: pointer; color: var(--foreground); font-weight: 600; }
+.connection-diagnostics summary:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.connection-diagnostics dl { display: grid; gap: 9px; margin: 14px 0; }
+.connection-diagnostics dl > div { display: grid; grid-template-columns: minmax(0, 112px) minmax(0, 1fr); gap: 10px; }
+.connection-diagnostics dt, .connection-diagnostics > p { color: var(--muted-foreground); }
+.connection-diagnostics dd { margin: 0; overflow-wrap: anywhere; }
+.connection-diagnostics code { font-size: 11px; overflow-wrap: anywhere; }
+.connection-last-failure { display: grid; gap: 5px; padding: 10px; border-radius: 8px; background: var(--muted); overflow-wrap: anywhere; }
+.connection-last-failure span { color: var(--muted-foreground); }
+.connection-last-failure p { margin: 0; }
+.connection-diagnostics pre { max-height: 220px; overflow: auto; padding: 10px; border: 1px solid var(--border); border-radius: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.connection-latency { margin-top: 14px; border-top: 1px solid var(--border); padding-top: 14px; }
+.connection-test-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.connection-test-result { display: grid; gap: 5px; padding: 12px; border-radius: 10px; background: var(--muted); font-size: 12px; }
+.connection-test-result strong { font-size: 20px; color: var(--primary); }
+.connection-latency .inline-error { color: var(--danger); }
+.connection-speed-value { display: grid; gap: 5px; padding: 4px 0 10px; }
+.connection-speed-value + .connection-speed-value { border-top: 1px solid var(--border); padding-top: 12px; }

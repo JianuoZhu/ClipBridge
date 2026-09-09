@@ -106,15 +106,16 @@ func createAPI(c config) (*webrtc.API, io.Closer, error) {
 }
 
 type gateway struct {
-	config   config
-	api      *webrtc.API
-	client   *http.Client
-	ctx      context.Context
-	cancel   context.CancelFunc
-	mu       sync.Mutex
-	peers    map[*webrtc.PeerConnection]context.CancelFunc
-	reserved int
-	requests chan struct{}
+	config       config
+	api          *webrtc.API
+	client       *http.Client
+	ctx          context.Context
+	cancel       context.CancelFunc
+	mu           sync.Mutex
+	peers        map[*webrtc.PeerConnection]context.CancelFunc
+	reserved     int
+	peerSequence uint64
+	requests     chan struct{}
 }
 
 func newGateway(c config, api *webrtc.API) *gateway {
@@ -149,6 +150,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+g.config.secret)) != 1 {
+		log.Print("p2p event=offer_rejected reason=auth_failed")
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
@@ -167,11 +169,15 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.mu.Lock()
 	if g.reserved >= maxPeers || g.ctx.Err() != nil {
 		g.mu.Unlock()
+		log.Print("p2p event=offer_rejected reason=busy")
 		http.Error(w, "Gateway busy", 503)
 		return
 	}
 	g.reserved++
+	g.peerSequence++
+	peerID := g.peerSequence
 	g.mu.Unlock()
+	log.Printf("p2p peer=%06x event=offer_received", peerID)
 	reserved := true
 	defer func() {
 		if reserved {
@@ -186,6 +192,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	pc, err := g.api.NewPeerConnection(webrtc.Configuration{ICEServers: servers})
 	if err != nil {
+		log.Printf("p2p peer=%06x event=offer_rejected reason=allocation_failed", peerID)
 		http.Error(w, "Unable to allocate peer", 503)
 		return
 	}
@@ -210,7 +217,16 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	context.AfterFunc(ctx, closePeer)
+	pc.OnICEConnectionStateChange(func(state webrtc.ICEConnectionState) {
+		log.Printf("p2p peer=%06x event=ice_state state=%s", peerID, state.String())
+	})
 	pc.OnConnectionStateChange(func(state webrtc.PeerConnectionState) {
+		log.Printf("p2p peer=%06x event=connection_state state=%s", peerID, state.String())
+		if state == webrtc.PeerConnectionStateConnected && pc.SCTP() != nil && pc.SCTP().Transport() != nil {
+			if pair, pairErr := pc.SCTP().Transport().ICETransport().GetSelectedCandidatePair(); pairErr == nil && pair != nil && pair.Local != nil && pair.Remote != nil {
+				log.Printf("p2p peer=%06x event=selected_pair local_type=%s remote_type=%s", peerID, pair.Local.Typ.String(), pair.Remote.Typ.String())
+			}
+		}
 		if state == webrtc.PeerConnectionStateFailed || state == webrtc.PeerConnectionStateClosed {
 			cancel()
 		}
@@ -218,6 +234,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Failed or abandoned handshakes must not occupy a slot for the entire TTL.
 	handshakeTimer := time.AfterFunc(30*time.Second, func() {
 		if pc.ConnectionState() != webrtc.PeerConnectionStateConnected {
+			log.Printf("p2p peer=%06x event=handshake_timeout", peerID)
 			cancel()
 		}
 	})
@@ -236,6 +253,7 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			dc.OnClose(cancel)
+			dc.OnOpen(func() { log.Printf("p2p peer=%06x event=control_open", peerID) })
 			dc.OnMessage(func(webrtc.DataChannelMessage) { cancel() })
 			return
 		}
@@ -271,18 +289,22 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		dc.OnMessage(b.onMessage)
 	})
 	if err = pc.SetRemoteDescription(input.Offer); err != nil {
+		log.Printf("p2p peer=%06x event=offer_rejected reason=invalid_remote_description", peerID)
 		cancel()
 		http.Error(w, "Invalid WebRTC offer", 400)
 		return
 	}
+	log.Printf("p2p peer=%06x event=remote_candidates candidates=%s", peerID, candidateTypeSummary(input.Offer.SDP))
 	answer, err := pc.CreateAnswer(nil)
 	if err != nil {
+		log.Printf("p2p peer=%06x event=offer_rejected reason=answer_creation_failed", peerID)
 		cancel()
 		http.Error(w, "Unable to create answer", 400)
 		return
 	}
 	gathered := webrtc.GatheringCompletePromise(pc)
 	if err = pc.SetLocalDescription(answer); err != nil {
+		log.Printf("p2p peer=%06x event=offer_rejected reason=local_description_failed", peerID)
 		cancel()
 		http.Error(w, "Unable to set answer", 500)
 		return
@@ -292,19 +314,26 @@ func (g *gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	select {
 	case <-gathered:
 	case <-timer.C:
+		log.Printf("p2p peer=%06x event=offer_rejected reason=ice_gather_timeout", peerID)
 		cancel()
 		http.Error(w, "ICE gathering timed out", 504)
 		return
 	case <-r.Context().Done():
+		log.Printf("p2p peer=%06x event=offer_cancelled reason=signaling_request_closed", peerID)
 		cancel()
 		return
 	case <-ctx.Done():
+		log.Printf("p2p peer=%06x event=offer_cancelled reason=peer_expired_or_closed", peerID)
 		http.Error(w, "Peer expired", 408)
 		return
 	}
+	log.Printf("p2p peer=%06x event=local_candidates candidates=%s", peerID, candidateTypeSummary(pc.LocalDescription().SDP))
 	w.Header().Set("Content-Type", "application/json")
 	if err = json.NewEncoder(w).Encode(map[string]any{"answer": pc.LocalDescription()}); err != nil {
+		log.Printf("p2p peer=%06x event=offer_cancelled reason=answer_write_failed", peerID)
 		cancel()
+	} else {
+		log.Printf("p2p peer=%06x event=answer_sent", peerID)
 	}
 }
 
@@ -331,6 +360,7 @@ func main() {
 		_ = server.Shutdown(shutdown)
 	}()
 	fmt.Printf("ClipBridge WebRTC gateway signaling on %s; direct UDP port %d\n", c.listen, c.udpPort)
+	log.Printf("p2p event=configuration stun_servers=%d advertised_ipv4=%d network=udp4", len(c.stun), len(c.advertise))
 	if err = server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Fatal(err)
 	}
