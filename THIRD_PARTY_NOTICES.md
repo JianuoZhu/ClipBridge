@@ -13,3 +13,11 @@ ClipBridge's browser interface incorporates the following open-source projects. 
 - Tailwind CSS — MIT — https://github.com/tailwindlabs/tailwindcss
 
 The bundled PDF.js CMaps, standard fonts, and WASM codecs include their upstream license files in `dist/web/pdfjs/`.
+
+The optional home WebRTC gateway uses Pion WebRTC and its Go dependencies. Exact versions are pinned in `gateway/go.mod` and `gateway/go.sum`.
+
+- Pion WebRTC, ICE, DataChannel, SCTP, DTLS and related Pion packages — MIT — https://github.com/pion/webrtc
+- Google UUID — BSD-3-Clause — https://github.com/google/uuid
+- Go supplementary libraries (`golang.org/x/*`) — BSD-3-Clause — https://go.googlesource.com/
+
+The gateway container includes the licenses of its Go module dependencies in `/usr/share/licenses/clip-p2p/`.

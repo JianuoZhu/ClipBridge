@@ -1,0 +1,139 @@
+# 浏览器直连家中节点
+
+这个可选传输层让每台浏览器独立与家中服务器建立 WebRTC DataChannel。发送设备上传到家中并收到保存确认后可以下线；接收设备之后建立自己的连接，读取同一份持久化内容。家中节点仍需保持在线。
+
+```text
+发送浏览器 ←→ 家中 WebRTC 服务 ←→ 接收浏览器
+                      │ 本机 HTTP
+                现有 Node 应用
+                      │
+               SQLite 与文件目录
+
+公网 HTTPS：网页、登录、连接协商；直连失败时也提供原来的业务传输
+```
+
+直连成功后，文字、列表、实时通知、上传、图片和 PDF 范围读取均可绕过公网中转。每个浏览器的连接独立，允许一端直连、另一端使用 HTTPS。新请求在连接建立前正常使用 HTTP(S)，不需要等待打洞。
+
+## 启用：家中 Docker 部署
+
+以下基于原来的 Linux 原生 Docker + WireGuard 部署。Windows/macOS Docker Desktop 的 UDP 网络行为需要单独实测；也可以在宿主直接运行 Node 与 gateway。
+
+1. 在家中项目目录生成内部服务密钥：
+
+   ```bash
+   openssl rand -hex 32
+   ```
+
+   将输出保存到家中 `.env` 的 `CLIP_P2P_SECRET`。它仅用于 Node 与同机 WebRTC 服务之间的认证，不是访问 PIN，也不会发送给浏览器。
+
+2. 在 `.env` 增加以下配置。保留现有的域名、PIN、管理员和存储设置：
+
+   ```dotenv
+   CLIP_P2P_SECRET=替换为上一步生成的随机值
+   CLIP_P2P_STUN_URLS=stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302
+   CLIP_P2P_UDP_PORT=50000
+   CLIP_P2P_ADVERTISE_IPS=192.168.1.10
+   ```
+
+   `192.168.1.10` 要替换为家中主机真实、固定的局域网 IPv4。这个设置让 Docker 中的服务向客户端提供宿主机地址，便于同一局域网直连；它不能把不可达的地址变得可达。不需要覆盖地址时留空。STUN 服务可以替换成两端网络可达的服务；明确设置为空表示仅尝试本地候选地址，适合本地测试。
+
+3. 使用附加 Compose 文件启动：
+
+   ```bash
+   sudo docker compose -f compose.yaml -f compose.p2p.yaml config --quiet
+   sudo docker compose -f compose.yaml -f compose.p2p.yaml up -d --build --force-recreate
+   sudo docker compose -f compose.yaml -f compose.p2p.yaml ps
+   sudo docker compose -f compose.yaml -f compose.p2p.yaml logs --tail=100 p2p clip
+   ```
+
+   此操作重建当前项目容器，更新时已有连接和进行中的上传会中断。`data` 和 Caddy 的持久卷保留。之后的更新也要带上两个 `-f` 参数；共享网络命名空间的两个服务应一起重建。
+
+附加配置自动启用 Node 的 P2P 功能，给 clip 增加外联网络，并只发布 WebRTC 的 UDP 端口。gateway 共享 clip 的网络命名空间：信令 API `127.0.0.1:8090` 和业务 HTTP `127.0.0.1:8080` 都不对外发布。公网服务器原有 HAProxy/WireGuard 配置无需新增业务 TCP 转发。
+
+## 网络要求与打洞
+
+- 家中主机防火墙需允许所配置 UDP 端口的流量，容器需能发起 UDP 外联并接收返回流量。
+- Pion 的主机候选使用配置的 UDP 端口；STUN 映射候选还会使用动态出站 UDP socket。不要把防火墙规则限制成“所有 WebRTC 外联只能使用 50000”。
+- 一般可以先尝试打洞，不要求预先配置家庭路由器端口映射。受限 NAT/CGNAT、禁止 UDP、Docker Desktop 或运营商策略可能阻止直连。
+- 如果家庭网络有可达公网 IPv4，手动映射所配置的 UDP 端口并正确配置候选地址可以改善可达性；是否需要，应依据实测决定。
+- 本版配置采用 IPv4、STUN 与 HTTPS 回退，不提供 TURN 部署或原生 IPv6 ICE。配置界面不会把“WebRTC 已连接”直接当成“已直连”，而是检查选中 ICE 候选对。
+- STUN 仅帮助发现映射地址，不中转文件正文。第三方 STUN 能看到用于探测的网络地址；可改用自己的 STUN 服务。
+
+## 界面上的状态
+
+点击顶栏的连接状态可以查看详细信息、往返延迟和重试按钮：
+
+| 状态 | 含义 |
+| --- | --- |
+| 正在建立直连 | 正在协商或检查实际路径，新操作仍可使用现有 HTTPS |
+| 家中直连 | 当前选中的 ICE 路径没有 TURN 中继，数据通道连接到家中 |
+| 中继连接 | 如果未来配置了中继，实际选中 relay 候选时显示；当前部署不配置 TURN |
+| HTTPS 备用 | 未启用、不支持、打洞失败或直连中断，新操作使用原路径 |
+
+详细弹窗中的“实时同步”与传输路径分别显示：直连状态表示这台设备的连接，不代表其他设备也已经连接。界面不显示对方尚未确认的“已送达”；“已保存到家中”表示后端已完成原有的保存流程。
+
+手动“重新尝试直连”会重建连接，取消这条连接上正在进行的传输。网络恢复和页面回到前台时也会检查连接；失败重连带退避，避免连续占用信令。
+
+## 文件、预览与失败处理
+
+- 文件按 16 KiB 分块传输，每个请求最多 1 MiB 的未消费数据窗口，并结合 DataChannel 缓冲量控制速率。下载时读取磁盘，上传时使用现有流式写入与配额检查。
+- “保存完成”依赖原后端的上传完成、落盘与数据库登记响应，不以浏览器缓冲区进度 100% 代替保存确认。文件库权限、过期、删除和编辑版本检查仍由同一个 Node 服务执行。
+- 每个请求重新验证原登录会话。退出登录后，旧 WebRTC 连接不能继续请求私有内容；上传也保留提交前的会话复查。
+- 直连请求尚未发送时可使用 HTTPS；发送之后的写入发生中断，结果可能不确定，不会自动重放，避免产生重复文字或文件。界面提示检查结果后重试。
+- GET/HEAD 可以在收到响应头之前回退；已经开始返回正文的读取失败会终止，不把两条路径的部分内容拼接。
+- 支持保存文件选择器的浏览器可将大文件流式写盘。没有此能力时，最多 64 MiB 的文件通过受限 Blob 下载；更大文件明确提示使用浏览器原生 HTTPS 下载，避免把大文件全部放入内存。
+- 图片预览使用会话内的受限内存缓存，关闭登录会话时清除。大于 8 MiB 的图片不自动读取来显示卡片，打开预览后再读取原图。此版本没有新增服务端缩略图生成器。
+- PDF 使用自定义范围读取，通过直连请求所需区间，不要求先下载完整文档；首页小图仍由客户端生成。
+- 文件上传尚不支持断点续传，失败后需要重传。接收端下载已保存的文件不依赖原发送端保持在线。
+
+## 本机开发
+
+需要 Node.js 24+ 与 Go（CI 使用 1.27.x，模块最低要求见 `gateway/go.mod`）。
+
+Node 的 `.env` 配置：
+
+```dotenv
+CLIP_DOMAIN=localhost
+CLIP_COOKIE_SECURE=false
+CLIP_P2P_ENABLED=true
+CLIP_P2P_GATEWAY_URL=http://127.0.0.1:8090
+CLIP_P2P_SECRET=两进程相同的随机内部密钥
+```
+
+gateway 不读取 `.env` 文件。用启动环境传入相同密钥与 STUN 配置，然后在 `gateway` 目录执行 `go run .`，另一个终端在项目根目录执行 `npm run dev`。gateway 默认访问本机 Node 8080；若 Node 换端口，设置 `CLIP_P2P_BACKEND_URL`。生产环境仍使用 HTTPS。
+
+## 测试与线上验收
+
+```bash
+npm run check
+npm test
+npm run test:e2e
+cd gateway
+go test ./...
+cd ..
+npm run test:p2p
+```
+
+`test:p2p` 自动构建 Go gateway，启动隔离临时数据的 Node 与 gateway，再运行 Chromium。需要先安装 Playwright Chromium：`npx playwright install chromium`。测试不使用生产 `.env` 或数据。可通过 `GO_BINARY` 指定 Go 可执行文件。
+
+自动化覆盖真实浏览器与 gateway 的连接、两设备文字与文件、HTTP 业务请求被阻止时的图片/PDF范围读取、发送端关闭后新接收连接的下载及 SHA-256 一致性、无法协商与连接断开的 HTTPS 回退、成员不能读取文件库，以及退出后旧连接的访问被拒绝。
+
+本地测试只能证明协议和保存流程，不能证明用户真实跨运营商网络一定能打洞。部署后进行这组验收：
+
+1. 手机 Wi-Fi 和电脑分别打开网站，确认两端顶栏路径。
+2. 手机切换蜂窝网络，确认能直连或明确显示 HTTPS 备用。
+3. 发送测试文件，等“已保存到家中”后关闭发送端；另一端重新打开网站，下载并比较文件校验值。
+4. 下载文件时发送文字，比较改造前后的响应和吞吐；检查状态弹窗中的 RTT。
+5. 暂停 gateway，确认网站继续通过 HTTPS 使用；恢复后点击重新尝试直连。
+
+如果一直回退，先检查 gateway 日志、两端 STUN 可达性、家中防火墙、容器 UDP 网络及候选地址。直连不能突破家中上行带宽，也不能消除真实跨境线路的拥塞。
+
+## 回退部署
+
+要停用可选传输层，确认没有需要保留的进行中上传，然后仅使用原 Compose 文件重建：
+
+```bash
+sudo docker compose -f compose.yaml up -d --build --remove-orphans
+```
+
+该命令移除本项目的可选 gateway 服务，保留数据，恢复原来的 HTTPS 架构；不要添加 `-v` 删除持久卷。

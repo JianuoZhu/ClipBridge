@@ -16,7 +16,8 @@
     "test:server": "node --test --test-isolation=none tests/*.test.js",
     "test:ui": "vitest run",
     "test:e2e": "npm run build && playwright test",
-    "check": "node --check src/index.js && node --check src/config.js && node --check src/auth.js && node --check src/store.js && node --check src/server.js && tsc --noEmit"
+    "check": "node --check src/index.js && node --check src/config.js && node --check src/auth.js && node --check src/store.js && node --check src/server.js && node --check src/p2p.js && tsc --noEmit",
+    "test:p2p": "npm run build && node tests/run-p2p.js"
   },
   "dependencies": {
     "@radix-ui/colors": "3.0.0",

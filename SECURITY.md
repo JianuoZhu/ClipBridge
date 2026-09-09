@@ -26,6 +26,10 @@ ClipBridge（界面名称 Jianuo Clip）面向单个所有者和少量可信设�
 
 ## 会话撤销
 
+启用可选 WebRTC 传输时，家中 Go gateway 通过同机内部接口取得当前登录身份；浏览器不会获得 HttpOnly 会话令牌或内部服务密钥。每个数据通道请求仍交给 Node 重新执行原有权限与配额检查，禁止访问登录/信令路径、任意 URL 或跟随重定向。gateway 不直接写 SQLite。两段连接分别在浏览器和家中节点之间加密，家中节点仍能读取保存的内容。
+
+gateway 信令监听同一容器网络命名空间的 loopback 地址，使用独立随机密钥；不要发布该 HTTP 监听端口。P2P 附加部署只发布 UDP 端口，并允许 ICE 所需的 UDP 外联。STUN 服务只参与发现映射地址，能够观察连接探测的网络地址。详见 [P2P 部署](docs/p2p.md)。
+
 - 当前设备退出会立即删除对应会话，并关闭使用该会话的 SSE 连接。
 - 活跃 SSE 连接在通知和每 20 秒心跳时复查会话；过期后关闭连接。
 - 修改 `CLIP_PIN`、`CLIP_USERNAME` 或 `CLIP_PASSWORD` 并重启应用会撤销全部旧会话，已保存内容保留。Docker 使用 `docker compose up -d --build` 使新环境配置生效。

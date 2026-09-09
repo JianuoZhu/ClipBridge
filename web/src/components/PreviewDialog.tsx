@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ChevronLeft, ChevronRight, Download, FileWarning, ImageIcon, LoaderCircle, Maximize2, Minus, Plus } from "lucide-react";
+import { ChevronLeft, ChevronRight, FileWarning, ImageIcon, LoaderCircle, Maximize2, Minus, Plus } from "lucide-react";
 import { Document, Page, pdfjs } from "react-pdf";
-import type { PDFDocumentProxy } from "pdfjs-dist";
+import type { PDFDataRangeTransport, PDFDocumentProxy } from "pdfjs-dist";
 import { TransformComponent, TransformWrapper } from "react-zoom-pan-pinch";
 import type { PreviewFile } from "@/lib/types";
-import { downloadUrl, previewUrl } from "@/lib/thumbnails";
+import { createThumbnailController, loadImagePreview, previewUrl } from "@/lib/thumbnails";
+import { createPdfSource } from "@/lib/pdf-source";
+import { ApiError } from "@/lib/client";
+import { DownloadButton } from "./DownloadButton";
 import { Button } from "./ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import "./preview.css";
@@ -13,7 +16,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 pdfjs.GlobalWorkerOptions.workerSrc = "/pdfjs/pdf.worker.min.mjs";
 const MAX_PDF = 100 * 1024 * 1024;
 
-export function PreviewDialog({ file, onClose, onUnauthorized }: { file: PreviewFile | null; onClose: () => void; onUnauthorized?: () => void }) {
+export function PreviewDialog({ file, sessionKey = 0, onClose, onUnauthorized }: { file: PreviewFile | null; sessionKey?: number; onClose: () => void; onUnauthorized?: () => void }) {
   const [pages, setPages] = useState(0);
   const [page, setPage] = useState(1);
   const [zoom, setZoom] = useState(1);
@@ -22,11 +25,36 @@ export function PreviewDialog({ file, onClose, onUnauthorized }: { file: Preview
   const [error, setError] = useState("");
   const [password, setPassword] = useState("");
   const [needsPassword, setNeedsPassword] = useState(false);
+  const [imageSrc, setImageSrc] = useState("");
+  const [pdfSource, setPdfSource] = useState<{ range: PDFDataRangeTransport } | null>(null);
   const passwordCallback = useRef<((password: string) => void) | null>(null);
   const stage = useRef<HTMLDivElement>(null);
   useEffect(() => {
     setPages(0); setPage(1); setZoom(1); setFit(true); setError(""); setNeedsPassword(false); setPassword(""); passwordCallback.current = null;
-  }, [file]);
+    setImageSrc(""); setPdfSource(null);
+    if (!file) return;
+    const controller = createThumbnailController();
+    let range: PDFDataRangeTransport | undefined;
+    const failed = (reason: Error) => {
+      if (controller.signal.aborted) return;
+      if (reason instanceof ApiError && reason.status === 401) onUnauthorized?.();
+      setError(file.previewType === "pdf"
+        ? `PDF 暂时无法打开：${reason.message || "请重试或下载查看。"}`
+        : reason.message || "内容暂时无法预览，请下载查看。");
+      setPdfSource(null);
+    };
+    if (file.previewType === "image") {
+      void loadImagePreview(file, sessionKey, controller.signal).then((url) => {
+        if (!controller.signal.aborted) setImageSrc(url);
+      }).catch(failed);
+    } else if (file.previewType === "pdf" && file.size <= MAX_PDF) {
+      void createPdfSource(pdfjs, previewUrl(file), file.size, controller.signal, failed).then((source) => {
+        range = source.range;
+        if (controller.signal.aborted) range.abort(); else setPdfSource(source);
+      }).catch(failed);
+    }
+    return () => { controller.abort(); range?.abort(); };
+  }, [file, sessionKey, onUnauthorized]);
   useEffect(() => {
     if (!stage.current) return;
     const observer = new ResizeObserver(([entry]) => setWidth(Math.max(260, Math.min(1100, entry.contentRect.width - 48))));
@@ -54,7 +82,7 @@ export function PreviewDialog({ file, onClose, onUnauthorized }: { file: Preview
       <DialogContent className="preview-dialog">
         <DialogHeader>
           <DialogTitle>{file.fileName}</DialogTitle>
-          <DialogDescription>{file.previewType === "pdf" ? "PDF 文档" : "图片"} · 关闭后不会保留预览内容</DialogDescription>
+          <DialogDescription>{file.previewType === "pdf" ? "PDF 文档" : "图片"} · 内容来自家中节点，退出登录后清除预览缓存</DialogDescription>
         </DialogHeader>
         {file.previewType === "image" ? (
           <TransformWrapper centerOnInit minScale={.35} maxScale={6} wheel={{ step: .12 }} doubleClick={{ mode: "toggle" }}>
@@ -63,15 +91,15 @@ export function PreviewDialog({ file, onClose, onUnauthorized }: { file: Preview
                 <Button variant="secondary" size="icon" onClick={() => zoomOut()} aria-label="缩小"><Minus size={17} /></Button>
                 <Button variant="secondary" size="icon" onClick={() => resetTransform()} aria-label="适应窗口"><Maximize2 size={17} /></Button>
                 <Button variant="secondary" size="icon" onClick={() => zoomIn()} aria-label="放大"><Plus size={17} /></Button>
-                <Button asChild variant="outline"><a href={downloadUrl(file)} download={file.fileName}><Download size={16} />下载</a></Button>
+                <DownloadButton file={file} label />
               </div>
               <TransformComponent wrapperClass="image-stage" contentClass="image-content">
-                <img src={previewUrl(file)} alt={file.fileName} onError={() => setError("图片暂时无法预览，请下载查看。")} />
+                {imageSrc ? <img src={imageSrc} alt={file.fileName} onError={() => setError("图片暂时无法预览，请下载查看。")} /> : !error && <div className="preview-state"><LoaderCircle className="spin" />正在读取图片…</div>}
               </TransformComponent>
             </>}
           </TransformWrapper>
         ) : downloadableOnly ? (
-          <div className="preview-state"><FileWarning /><strong>这个 PDF 超过 100 MB</strong><span>为了避免浏览器占用过多内存，请下载后查看。</span></div>
+          <div className="preview-state"><FileWarning /><strong>这个 PDF 超过 100 MB</strong><span>为了避免浏览器占用过多内存，请下载后查看。</span><DownloadButton file={file} label /></div>
         ) : (
           <>
             <div className="preview-toolbar">
@@ -81,10 +109,10 @@ export function PreviewDialog({ file, onClose, onUnauthorized }: { file: Preview
               <Button variant="secondary" size="icon" onClick={() => { setFit(false); setZoom((value) => Math.max(.5, value - .15)); }} aria-label="缩小"><Minus size={17} /></Button>
               <Button variant={fit ? "default" : "secondary"} size="sm" onClick={() => setFit(true)}>适应宽度</Button>
               <Button variant="secondary" size="icon" onClick={() => { setFit(false); setZoom((value) => Math.min(3, value + .15)); }} aria-label="放大"><Plus size={17} /></Button>
-              <Button asChild variant="outline"><a href={downloadUrl(file)} download={file.fileName}><Download size={16} />下载</a></Button>
+              <DownloadButton file={file} label />
             </div>
             <div ref={stage} className="pdf-stage">
-              <Document file={previewUrl(file)} options={options}
+              {pdfSource ? <Document file={pdfSource} options={options}
                 onLoadSuccess={loaded}
                 onLoadError={(reason) => {
                   const status = (reason as { status?: number }).status;
@@ -98,7 +126,7 @@ export function PreviewDialog({ file, onClose, onUnauthorized }: { file: Preview
                   devicePixelRatio={Math.min(window.devicePixelRatio || 1, 2)}
                   renderAnnotationLayer={false} renderTextLayer
                   loading={<div className="page-skeleton" />} />}
-              </Document>
+              </Document> : <div className="preview-state">{error ? <><FileWarning />{error}</> : <><LoaderCircle className="spin" />正在读取 PDF…</>}</div>}
             </div>
           </>
         )}

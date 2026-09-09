@@ -8,6 +8,10 @@
 clip-backup*.tar.gz
 data
 node_modules
+.cache
+dist
+test-results
+playwright-report
 outputs
 work
 tests

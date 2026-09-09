@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError, copyText, formatSize, uploadFile } from "../lib/client";
 import { clearPreviewCache } from "../lib/thumbnails";
+import { createEventStream, type EventStream } from "../lib/event-stream";
+import { getTransportSnapshot, startTransport, stopTransport, subscribeTransport } from "../lib/transport";
 import type { ClipItem, LibraryFile } from "../lib/types";
 
 export interface Settings {
@@ -46,7 +48,8 @@ export function useClipBridge() {
   const generation = useRef(0);
   const sessionRef = useRef<Session | null>(null);
   const panelRef = useRef<"clipboard" | "library">("clipboard");
-  const streamRef = useRef<EventSource | null>(null);
+  const streamRef = useRef<EventStream | null>(null);
+  const itemsRevision = useRef(0);
   const itemsRequest = useRef<RefreshRequest | null>(null);
   const libraryRequest = useRef<RefreshRequest | null>(null);
   const hydrated = useRef({ items: false, library: false });
@@ -65,6 +68,8 @@ export function useClipBridge() {
 
   const clearPrivateData = useCallback(() => {
     generation.current += 1;
+    stopTransport();
+    itemsRevision.current += 1;
     streamRef.current?.close();
     streamRef.current = null;
     for (const controller of uploadControllers.current.values()) controller.abort();
@@ -95,6 +100,7 @@ export function useClipBridge() {
     clearPrivateData();
     sessionRef.current = value;
     setSession(value);
+    void startTransport();
     setAdminEnabled(value.adminEnabled !== false);
     const next = openLibrary && value.role === "admin" ? "library" : "clipboard";
     panelRef.current = next;
@@ -131,12 +137,15 @@ export function useClipBridge() {
       try {
         do {
           request.again = false;
+          const revision = itemsRevision.current;
           const payload = await api<{ items: ClipItem[]; latest?: ClipItem[] }>("/api/items");
           if (version !== generation.current) return;
+          // A POST may complete while an older list snapshot is in flight.
+          if (revision !== itemsRevision.current) { request.again = true; continue; }
           const newest = payload.latest || ["text", "file"].map((kind) => payload.items.find((item) => item.kind === kind)).filter((item): item is ClipItem => Boolean(item));
           detectArrivals("items", [...new Map([...payload.items, ...newest].map((item) => [item.id, item])).values()]);
           setItems(payload.items); setLatest(newest); setItemsError("");
-          if (streamRef.current?.readyState === EventSource.OPEN) setConnection("online");
+          if (streamRef.current?.readyState === 1) setConnection("online");
         } while (request.again);
       } catch (error) {
         if (version !== generation.current) return;
@@ -194,6 +203,7 @@ export function useClipBridge() {
     return () => {
       lifecycle.current += 1;
       generation.current += 1;
+      stopTransport();
       streamRef.current?.close();
       for (const controller of uploadControllers.current.values()) controller.abort();
       for (const timer of arrivalTimers.current) clearTimeout(timer);
@@ -213,7 +223,7 @@ export function useClipBridge() {
       if (!current()) return;
       streamRef.current?.close();
       setConnection("connecting");
-      const source = new EventSource("/api/events");
+      const source = createEventStream("/api/events");
       streamRef.current = source;
       const isSource = () => current() && streamRef.current === source;
       source.addEventListener("ready", () => {
@@ -233,7 +243,7 @@ export function useClipBridge() {
           }
         } catch { /* A reconnecting or older server can still trigger a list diff. */ }
         clearTimeout(refreshTimer);
-        refreshTimer = setTimeout(() => void loadItems(), 120);
+        refreshTimer = setTimeout(() => void loadItems(), 30);
       });
       source.addEventListener("library", () => { if (isSource() && panelRef.current === "library") void loadLibrary(); });
       source.addEventListener("session-expired", () => { if (isSource()) signOut(); });
@@ -247,7 +257,7 @@ export function useClipBridge() {
         if (!current()) return;
         if (!value.authenticated) { signOut(); return; }
         if (value.role !== sessionRef.current?.role) { enterSession(value); return; }
-        if (!streamRef.current || streamRef.current.readyState === EventSource.CLOSED) connect();
+        if (!streamRef.current || streamRef.current.readyState === 2) connect();
         await loadItems();
         if (panelRef.current === "library") await loadLibrary();
       } catch (error) {
@@ -256,7 +266,7 @@ export function useClipBridge() {
         else setConnection("offline");
       } finally {
         checking = false;
-        if (current() && (!streamRef.current || streamRef.current.readyState === EventSource.CLOSED)) {
+        if (current() && (!streamRef.current || streamRef.current.readyState === 2)) {
           clearTimeout(reconnectTimer);
           reconnectTimer = setTimeout(() => void check(), 5000);
         }
@@ -264,12 +274,21 @@ export function useClipBridge() {
     };
     const visible = () => { if (document.visibilityState === "visible") void check(); };
     const online = () => void check();
+    const direct = () => ["direct", "relay"].includes(getTransportSnapshot().mode);
+    let wasDirect = direct();
+    const unsubscribeTransport = subscribeTransport(() => {
+      const isDirect = direct();
+      if (wasDirect === isDirect || !current()) return;
+      wasDirect = isDirect;
+      connect();
+    });
     connect(); void loadItems();
     if (panelRef.current === "library") void loadLibrary();
     window.addEventListener("online", online);
     document.addEventListener("visibilitychange", visible);
     return () => {
       disposed = true; clearTimeout(refreshTimer); clearTimeout(reconnectTimer);
+      unsubscribeTransport();
       streamRef.current?.close(); streamRef.current = null;
       window.removeEventListener("online", online); document.removeEventListener("visibilitychange", visible);
     };
@@ -316,11 +335,15 @@ export function useClipBridge() {
     const version = generation.current;
     sendBusy.current = true; setSending(true);
     try {
-      await api("/api/items/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
+      const { item } = await api<{ item: ClipItem }>("/api/items/text", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text }) });
       if (version !== generation.current) return false;
-      await loadItems();
-      if (version !== generation.current) return false;
-      notify("文字已发送"); return true;
+      itemsRevision.current += 1;
+      seen.current.items.add(item.id);
+      setItems((current) => [item, ...current.filter((value) => value.id !== item.id)].slice(0, 100));
+      setLatest((current) => [item, ...current.filter((value) => value.kind !== "text")]);
+      setItemsError("");
+      void loadItems();
+      notify("文字已保存到家中"); return true;
     } catch (error) {
       if (version === generation.current) {
         if (error instanceof ApiError && error.status === 401) signOut(); else notify(messageOf(error), true);
@@ -349,7 +372,7 @@ export function useClipBridge() {
             if (version === generation.current) setUploads((values) => values.map((value) => value.id === id ? { ...value, progress } : value));
           });
           if (version !== generation.current) return;
-          notify(`${file.name} ${library ? "已存入文件库" : "已发送"}`);
+          notify(`${file.name} ${library ? "已存入文件库" : "已保存到家中"}`);
           if (library) await loadLibrary(); else await loadItems();
         } catch (error) {
           if (version !== generation.current || (error instanceof Error && error.name === "AbortError")) return;

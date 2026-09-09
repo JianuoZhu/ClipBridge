@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID } from "node:crypto";
 import { pipeline } from "node:stream/promises";
+import { createP2pSignaling, P2pError } from "./p2p.js";
 import {
   createPasswordVerifier,
   createSession,
@@ -225,6 +226,7 @@ function previewMime(bytes, type) {
 }
 
 export async function createClipServer({ config, store }) {
+  const p2p = createP2pSignaling(config.p2p);
   const pin = config.pin ?? "1223";
   // Bind every session to both credentials and the new role model; upgrading revokes legacy sessions.
   await createPasswordVerifier(hashToken(JSON.stringify(["roles-v1", pin, config.username, config.password])), { store, username: config.username });
@@ -435,6 +437,27 @@ export async function createClipServer({ config, store }) {
       const session = getSession(request);
       if (!session) return json(response, 200, { authenticated: false, adminEnabled: Boolean(config.password) });
       return json(response, 200, sessionPayload(session));
+    }
+
+    if (request.method === "GET" && pathname === "/api/p2p/config") {
+      requireSession(request);
+      return json(response, 200, p2p.configuration());
+    }
+
+    if (request.method === "POST" && pathname === "/api/p2p/offer") {
+      requireMutationRequest(request);
+      const session = requireSession(request);
+      const body = await readJson(request, 128 * 1024);
+      requireSession(request);
+      const controller = new AbortController();
+      const cancel = () => { if (!response.writableEnded) controller.abort(); };
+      response.on("close", cancel);
+      try {
+        const answer = await p2p.offer({ body, session, cookieName,
+          host: config.domain || firstHeader(request.headers.host), signal: controller.signal });
+        requireSession(request);
+        return json(response, 200, answer);
+      } finally { response.off("close", cancel); }
     }
 
     if (request.method === "POST" && ["/api/auth/login", "/api/auth/admin"].includes(pathname)) {
@@ -763,13 +786,14 @@ export async function createClipServer({ config, store }) {
         response.destroy();
         return;
       }
-      const status = error instanceof HttpError ? error.status : 500;
+      const known = error instanceof HttpError || error instanceof P2pError;
+      const status = known ? error.status : 500;
       if (status === 500) console.error("Request failed");
       if (!request.readableEnded) {
         response.setHeader("Connection", "close");
         request.resume();
       }
-      json(response, status, { error: error instanceof HttpError ? error.message : "服务器内部错误" });
+      json(response, status, { error: known ? error.message : "服务器内部错误" });
     });
   });
   server.headersTimeout = 15_000;
@@ -783,6 +807,7 @@ export async function createClipServer({ config, store }) {
   return {
     server,
     close(callback) {
+      p2p.close();
       clearInterval(cleanupTimer);
       clearInterval(heartbeatTimer);
       for (const client of eventClients.keys()) client.end();

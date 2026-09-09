@@ -10,7 +10,7 @@ export class ApiError extends Error {
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
   if (options.method && !["GET", "HEAD"].includes(options.method)) headers.set("X-Clip-Request", "1");
-  const response = await fetch(path, { ...options, headers, credentials: "same-origin" });
+  const response = await transportFetch(path, { ...options, headers, credentials: "same-origin" });
   const payload = response.headers.get("content-type")?.includes("application/json")
     ? await response.json() : null;
   if (!response.ok) throw new ApiError(payload?.error || `请求失败（${response.status}）`, response.status);
@@ -52,6 +52,23 @@ export async function copyText(text: string): Promise<boolean> {
 }
 
 export function uploadFile(file: File, library: boolean, signal: AbortSignal, onProgress: (value: number) => void): Promise<void> {
+  const { mode } = getTransportSnapshot();
+  if (mode === "direct" || mode === "relay") {
+    return transportFetch(library ? "/api/library" : "/api/items/file", {
+      method: "POST", signal, body: file,
+      headers: {
+        "X-Clip-Request": "1", "X-Clip-File-Name": encodeURIComponent(file.name),
+        "Content-Type": file.type || "application/octet-stream",
+      },
+    }, onProgress).then(async (response) => {
+      // Only the home server's successful response confirms durable storage.
+      if (!response.ok) {
+        const payload = await response.json().catch(() => null);
+        throw new ApiError(payload?.error || `上传失败（${response.status}）`, response.status);
+      }
+      await response.arrayBuffer();
+    });
+  }
   return new Promise((resolve, reject) => {
     const request = new XMLHttpRequest();
     const abort = () => request.abort();
@@ -83,3 +100,4 @@ export function uploadFile(file: File, library: boolean, signal: AbortSignal, on
     } catch (error) { clean(); reject(error); }
   });
 }
+import { getTransportSnapshot, transportFetch } from "./transport";

@@ -19,6 +19,22 @@
 .header-inner { width: min(1180px, calc(100% - 36px)); min-height: 62px; margin: auto; display: flex; align-items: center; gap: 18px; }
 .connection { display: flex; align-items: center; gap: 6px; color: var(--muted-foreground); font-size: 12px; white-space: nowrap; }
 .connection svg { width: 14px; height: 14px; color: #c38b39; }.connection.online svg { color: #3f946e; }.connection.offline svg { color: var(--danger); }
+.connection-button { border: 1px solid var(--border); background: var(--background); padding: 6px 8px; border-radius: 8px; cursor: pointer; }
+.connection-button:hover { background: var(--muted); }
+.connection-button:focus-visible { outline: 2px solid var(--ring); outline-offset: 3px; }
+.connection.transport-direct svg, .connection-path.transport-direct svg { color: #3f946e; }
+.connection.transport-http svg, .connection.transport-unavailable svg, .connection.transport-relay svg { color: #c38b39; }
+.connection-dialog { max-width: 460px; }
+.connection-path { display: flex; align-items: center; justify-content: center; gap: 18px; padding: 20px 10px; background: var(--muted); border-radius: 10px; font-size: 14px; }
+.connection-path svg { width: 26px; color: var(--muted-foreground); }
+.connection-details { display: grid; gap: 10px; margin: 0; }
+.connection-details div { display: flex; justify-content: space-between; gap: 16px; font-size: 13px; }
+.connection-details dt { color: var(--muted-foreground); }.connection-details dd { margin: 0; text-align: right; }
+.connection-explanation, .connection-detail { margin: 0; font-size: 13px; line-height: 1.7; color: var(--muted-foreground); overflow-wrap: anywhere; }
+.connection-detail { color: var(--foreground); }
+.download-control { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+.download-cancel { position: absolute; right: 3px; top: 3px; }
+.download-status { position: absolute; top: calc(100% + 6px); right: 0; max-width: min(290px, 80vw); width: max-content; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--background); color: var(--foreground); box-shadow: 0 4px 16px #0002; font-size: 12px; line-height: 1.5; z-index: 5; }
 .main-tabs { align-self: stretch; margin: 0 auto; display: flex; }
 .main-tabs button { position: relative; display: flex; align-items: center; gap: 7px; padding: 0 15px; border: 0; background: transparent; color: var(--muted-foreground); cursor: pointer; font-weight: 620; }
 .main-tabs button svg { width: 16px; height: 16px; }
@@ -107,7 +123,11 @@
   .upload-row .button { width: 44px; height: 44px; min-height: 44px; }
   .theme-option { min-height: 44px; }
   .header-inner { min-height: 58px; }
-  .brand span, .connection { display: none; }
+  .brand span { display: none; }
+  .header-inner { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; padding-top: 8px; }
+  .connection-button { justify-self: start; min-height: 34px; }
+  .connection-button span { display: inline; font-size: 11px; }
+  .header-inner .main-tabs { grid-row: 2; grid-column: 1 / -1; justify-content: center; margin: 0; }
   .main-tabs { margin: 0 auto 0 4px; }.main-tabs button { font-size: 12px; padding: 0 9px; }.main-tabs button svg { display: none; }
   .header-actions { gap: 0; }.app-shell { width: calc(100% - 16px); }
   .compose-panel, .content-column > section, .library-panel { padding: 13px; border-radius: 14px; }

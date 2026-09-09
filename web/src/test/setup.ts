@@ -1,4 +1,8 @@
 import "@testing-library/jest-dom/vitest";
+import { cleanup } from "@testing-library/react";
+import { afterEach } from "vitest";
+
+afterEach(cleanup);
 
 Object.defineProperty(window, "matchMedia", {
   writable: true,
@@ -32,5 +36,5 @@ Object.defineProperty(window, "ResizeObserver", { value: ResizeObserverMock });
 Object.defineProperty(window, "IntersectionObserver", { value: IntersectionObserverMock });
 Object.defineProperty(globalThis, "ResizeObserver", { value: ResizeObserverMock });
 Object.defineProperty(globalThis, "IntersectionObserver", { value: IntersectionObserverMock });
-Object.defineProperty(URL, "createObjectURL", { value: () => "blob:test" });
-Object.defineProperty(URL, "revokeObjectURL", { value: () => {} });
+Object.defineProperty(URL, "createObjectURL", { configurable: true, writable: true, value: () => "blob:test" });
+Object.defineProperty(URL, "revokeObjectURL", { configurable: true, writable: true, value: () => {} });

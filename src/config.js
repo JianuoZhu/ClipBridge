@@ -9,6 +9,29 @@ function integer(value, fallback, minimum, maximum, name) {
   return parsed;
 }
 
+function p2pConfig(env) {
+  const enabled = (env.CLIP_P2P_ENABLED ?? "false").trim().toLowerCase();
+  if (!["true", "false"].includes(enabled)) throw new Error("CLIP_P2P_ENABLED must be true or false");
+  const secret = env.CLIP_P2P_SECRET || "";
+  if (enabled === "true" && !/^[A-Za-z0-9_-]{32,256}$/.test(secret)) {
+    throw new Error("CLIP_P2P_SECRET must contain 32 to 256 random URL-safe characters when P2P is enabled");
+  }
+  const gatewayUrl = env.CLIP_P2P_GATEWAY_URL || "http://127.0.0.1:8090";
+  let url;
+  try { url = new URL(gatewayUrl); } catch { throw new Error("CLIP_P2P_GATEWAY_URL must be a loopback HTTP URL"); }
+  if (url.protocol !== "http:" || !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+      url.username || url.password || url.search || url.hash || url.pathname !== "/") {
+    throw new Error("CLIP_P2P_GATEWAY_URL must be a loopback HTTP URL without credentials or a path");
+  }
+  const stunUrls = (env.CLIP_P2P_STUN_URLS ?? "stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302")
+    .split(",").map((value) => value.trim()).filter(Boolean);
+  if (stunUrls.length > 8 || stunUrls.some((value) => !/^stun:[a-zA-Z0-9.-]+(?::[0-9]{1,5})?$/.test(value) ||
+      (value.split(":")[2] && (Number(value.split(":")[2]) < 1 || Number(value.split(":")[2]) > 65535)))) {
+    throw new Error("CLIP_P2P_STUN_URLS must contain at most 8 comma-separated stun:host:port URLs");
+  }
+  return { enabled: enabled === "true", gatewayUrl: url.origin, secret, stunUrls };
+}
+
 export function loadConfig(env = process.env) {
   const pin = env.CLIP_PIN ?? "1223";
   if (typeof pin !== "string" || !/^\d{4,12}$/.test(pin)) {
@@ -36,6 +59,7 @@ export function loadConfig(env = process.env) {
   }
 
   return {
+    p2p: p2pConfig(env),
     port: integer(env.CLIP_PORT, 8080, 1, 65535, "CLIP_PORT"),
     dataDir: path.resolve(env.CLIP_DATA_DIR || "./data"),
     domain,

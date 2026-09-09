@@ -19,15 +19,33 @@ jobs:
         with:
           node-version: 24
           cache: npm
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.x'
+          cache-dependency-path: gateway/go.sum
       - run: npm ci --ignore-scripts
       - run: npm run check
       - run: npm test
+      - run: go test ./...
+        working-directory: gateway
+      - if: runner.os == 'Linux'
+        run: go test -race ./...
+        working-directory: gateway
       - if: runner.os == 'Linux'
         run: npx playwright install --with-deps chromium
       - if: runner.os == 'Linux'
         run: npm run test:e2e
       - if: runner.os == 'Linux'
+        run: npm run test:p2p
+      - if: runner.os == 'Linux'
         run: docker build --tag clipbridge:ci .
+      - if: runner.os == 'Linux'
+        run: docker build --tag clipbridge-p2p:ci gateway
+      - if: runner.os == 'Linux'
+        run: docker compose -f compose.yaml -f compose.p2p.yaml config --quiet
+        env:
+          CLIP_DOMAIN: clip.example.com
+          CLIP_P2P_SECRET: ci_only_not_a_production_secret_0123456789
       - if: failure() && runner.os == 'Linux'
         uses: actions/upload-artifact@v4
         with:

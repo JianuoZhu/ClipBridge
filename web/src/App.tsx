@@ -1,8 +1,8 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import {
-  AlertCircle, ArrowDown, Check, Clipboard, Copy, Download, FileArchive, FileText, FolderOpen,
+  AlertCircle, ArrowDown, Check, Clipboard, Copy, FileArchive, FileText, FolderOpen,
   HardDrive, KeyRound, Library, Link2, LogIn, LogOut, Pencil, RefreshCw, Search, Send,
-  ShieldCheck, Trash2, Upload, Wifi, WifiOff, X
+  ShieldCheck, Trash2, Upload, X
 } from "lucide-react";
 import { AnimatePresence, motion } from "motion/react";
 import { api, ApiError, formatSize, relativeTime } from "@/lib/client";
@@ -10,6 +10,8 @@ import type { ClipItem, LibraryFile, PreviewFile } from "@/lib/types";
 import { useClipBridge } from "@/hooks/useClipBridge";
 import { ThemePicker } from "@/components/ThemePicker";
 import { Thumbnail } from "@/components/Thumbnail";
+import { ConnectionStatus } from "@/components/ConnectionStatus";
+import { DownloadButton } from "@/components/DownloadButton";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import "./app.css";
@@ -91,7 +93,7 @@ function Composer({ app }: { app: ReturnType<typeof useClipBridge> }) {
     if (await app.sendText(current)) setText((value) => value === current ? "" : value);
   };
   return <section className="compose-panel">
-    <div className="panel-title"><div><h2>发送</h2><p>文字或文件会立即出现在其他设备</p></div><Send size={19} /></div>
+    <div className="panel-title"><div><h2>发送</h2><p>保存到家中后，可在其他设备接着使用</p></div><Send size={19} /></div>
     <div className="text-composer">
       <label className="sr-only" htmlFor="clip-text">发送文字</label>
       <textarea id="clip-text" value={text} onChange={(event) => setText(event.target.value)} placeholder="粘贴或输入文字…"
@@ -149,7 +151,7 @@ function FileCard({ item, app, scope, onPreview, onEdit, compact = false }: {
     </div>
     <div className="card-actions">
       {canPreview && <Button size="sm" variant="secondary" onClick={() => onPreview(preview)}>预览</Button>}
-      <Button asChild size="icon" variant="outline"><a href={"/api/" + scope + "/" + item.id + "/file"} download={preview.fileName} aria-label="下载"><Download size={16} /></a></Button>
+      <DownloadButton file={preview} onNotice={app.notify} />
       {onEdit && <Button size="icon" variant="ghost" onClick={() => onEdit(item as LibraryFile)} aria-label="编辑文件信息"><Pencil size={16} /></Button>}
       {!compact && <Button size="icon" variant="ghost" onClick={() => { if (confirm("删除“" + preview.fileName + "”？")) void app.deleteFile(item, scope === "library"); }} aria-label="删除"><Trash2 size={16} /></Button>}
     </div>
@@ -287,7 +289,7 @@ export default function App() {
     <header className="app-header">
       <div className="header-inner">
         <div className="brand"><img src="/icon.svg" alt="" /><span>Jianuo Clip</span></div>
-        <div className={"connection " + app.connection}>{app.connection === "online" ? <Wifi /> : <WifiOff />}<span>{app.connection === "online" ? "已连接" : app.connection === "connecting" ? "正在连接" : "连接中断"}</span></div>
+        <ConnectionStatus connection={app.connection} />
         <nav className="main-tabs" aria-label="工作空间">
           <button className={app.panel === "clipboard" ? "active" : ""} onClick={() => app.switchPanel("clipboard")}><Clipboard />设备传输</button>
           {app.session.role === "admin" && <button className={app.panel === "library" ? "active" : ""} onClick={() => app.switchPanel("library")}><Library />文件库</button>}
@@ -313,7 +315,7 @@ export default function App() {
       </motion.div>}
     </AnimatePresence>
     {update && <div className="update-banner"><RefreshCw size={16} /><span>新版本已准备好</span><Button size="sm" onClick={() => { update.waiting?.postMessage("ACTIVATE_UPDATE"); window.location.reload(); }}>刷新使用</Button></div>}
-    {preview && <Suspense fallback={null}><PreviewDialog file={preview} onClose={() => setPreview(null)} onUnauthorized={app.signOut} /></Suspense>}
+    {preview && <Suspense fallback={null}><PreviewDialog file={preview} sessionKey={app.sessionKey} onClose={() => setPreview(null)} onUnauthorized={app.signOut} /></Suspense>}
     <LibraryEditor file={editing} app={app} onClose={() => setEditing(null)} />
     <Dialog open={adminOpen} onOpenChange={setAdminOpen}>
       <DialogContent><DialogHeader><DialogTitle>管理员登录</DialogTitle><DialogDescription>当前设备将切换为管理员会话。</DialogDescription></DialogHeader>

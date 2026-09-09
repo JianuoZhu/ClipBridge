@@ -1,0 +1,42 @@
+# Optional home-side WebRTC transport. Combine with compose.yaml.
+# The gateway shares clip's network namespace: its signaling API is loopback-only.
+services:
+  clip:
+    environment:
+      CLIP_P2P_ENABLED: "true"
+      CLIP_P2P_GATEWAY_URL: http://127.0.0.1:8090
+      CLIP_P2P_SECRET: ${CLIP_P2P_SECRET:?Set a random CLIP_P2P_SECRET in .env}
+      CLIP_P2P_STUN_URLS: ${CLIP_P2P_STUN_URLS-stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302}
+    ports:
+      - "${CLIP_P2P_UDP_PORT:-50000}:${CLIP_P2P_UDP_PORT:-50000}/udp"
+    networks:
+      - clip_internal
+      - p2p_egress
+
+  p2p:
+    build: ./gateway
+    restart: unless-stopped
+    network_mode: service:clip
+    depends_on:
+      clip:
+        condition: service_healthy
+    environment:
+      CLIP_P2P_LISTEN: 127.0.0.1:8090
+      CLIP_P2P_BACKEND_URL: http://127.0.0.1:8080
+      CLIP_P2P_SECRET: ${CLIP_P2P_SECRET:?Set a random CLIP_P2P_SECRET in .env}
+      CLIP_P2P_STUN_URLS: ${CLIP_P2P_STUN_URLS-stun:stun.cloudflare.com:3478,stun:stun.l.google.com:19302}
+      CLIP_P2P_UDP_PORT: ${CLIP_P2P_UDP_PORT:-50000}
+      CLIP_P2P_ADVERTISE_IPS: ${CLIP_P2P_ADVERTISE_IPS:-}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    logging:
+      driver: local
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  p2p_egress:

@@ -8,11 +8,14 @@ ClipBridge（界面名称 **Jianuo Clip**）是一个轻量、自托管的跨设
 
 [快速开始](#快速开始) · [服务器与家中节点部署](docs/deployment.md) · [使用教程](docs/usage.md) · [登录机制](docs/authentication.md) · [安全模型](SECURITY.md)
 
+可选的 [浏览器直连家中节点](docs/p2p.md) 使用 WebRTC 打洞，让发送端和接收端分别连接家中存储；保存完成后发送端可以下线。界面显示直连、连接中和 HTTPS 备用路径，直连不可用时保留原有传输。
+
 ## 功能
 
 - **文字共享**：发送、复制、删除，支持 `Ctrl/Cmd + Enter` 发送。
 - **文件中转**：多文件选择与拖放、上传进度、附件下载，支持单区间 HTTP Range 下载。
 - **实时更新**：通过 Server-Sent Events（SSE）通知在线设备，重新连接后补取最新列表。
+- **家中直连（可选）**：WebRTC DataChannel 传输消息、文件与预览，真实 ICE 路径和同步状态可在顶栏查看；独立 Go 网关接入原有权限及持久化流程。
 - **持久化与清理**：SQLite 保存内容和元数据，文件独立落盘；按保留时间过期，限制单文件大小和文件总配额。
 - **PIN 访问**：输入预设 PIN 即可开始传输，默认 `1223`；支持限速、会话 Cookie 和同源写入校验。
 - **最新送达**：首页分别突出最新文字和最新文件，直接复制或下载。
@@ -152,6 +155,7 @@ npm run build     # TypeScript 检查并生成生产前端
 npm run check     # 检查后端语法和前端类型
 npm test          # 构建并运行服务端和 UI 回归测试
 npm run test:e2e  # 在真实浏览器中运行生产端到端测试
+npm run test:p2p  # 需要 Go 与 Chromium；验证真实 WebRTC、持久化与 HTTPS 回退
 ```
 
 测试覆盖登录与撤销、配置校验、文字和文件流程、配额与异常上传、Range 下载、SSE、数据库升级、React 会话竞态、主题、图片/PDF 预览，以及 Service Worker 缓存边界。公网 TLS 与 WireGuard 链路仍需要部署后验证。
@@ -176,5 +180,6 @@ Caddyfile           # HTTPS 入口配置
 - 不支持设备配对、单设备撤销、多个独立用户空间、后台系统剪贴板同步或断点上传。
 - Service Worker 仅缓存应用外壳，不缓存 API 数据、文字或下载文件；离线时不能同步，安装入口取决于浏览器支持。
 - 家中电脑离线、睡眠或隧道中断时，公网部署不可用。
+- 可选直连不保证所有 NAT/运营商网络都能打洞；失败回退 HTTPS。没有文件保存选择器的浏览器，超过 64 MiB 的下载明确回退原生 HTTP(S)。详情见 [P2P 部署和边界](docs/p2p.md)。
 
 欢迎通过 Issue 提交问题，通过 Pull Request 提交改进。安全问题请按 [SECURITY.md](SECURITY.md) 私下报告，并避免公开真实凭据或私人内容。

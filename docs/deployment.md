@@ -2,6 +2,8 @@
 
 本指南使用公网 Linux 服务器作为 TCP 入口，通过 WireGuard 把请求转到家中 Linux 电脑。TLS 在家中 Caddy 终止，Node.js 仅在容器内网提供 HTTP 服务。
 
+完成基础部署后，可以按 [浏览器直连家中节点](p2p.md) 启用可选 WebRTC 传输。它保留这套 HTTPS 入口用于网页、登录、连接协商和备用传输，同时让文件与消息在打洞成功后直达家中。
+
 如果只想本机体验，请看 [README 快速开始](../README.md#快速开始)。本教程以两端 Ubuntu 24.04 和 Linux 原生 Docker Engine 为例；不以 Windows/macOS Docker Desktop 的网络行为为前提。
 
 | 角色 | 部署或使用什么 | 是否保存应用数据 |
